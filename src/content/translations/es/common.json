@@ -1,0 +1,33 @@
+{
+  "app": {
+    "name": "DataPath",
+    "tagline": "Aprende Data Engineering desde cero"
+  },
+  "nav": {
+    "home": "Inicio",
+    "courses": "Cursos",
+    "practice": "Práctica",
+    "achievements": "Logros",
+    "stats": "Estadísticas",
+    "settings": "Ajustes",
+    "search": "Buscar lecciones, ejercicios..."
+  },
+  "actions": {
+    "save": "Guardar",
+    "cancel": "Cancelar",
+    "continue": "Continuar",
+    "back": "Volver",
+    "close": "Cerrar"
+  },
+  "status": {
+    "setupComplete": "Setup completo",
+    "phase1Done": "Fase 1 completada",
+    "phase2Done": "Fase 2 completada"
+  },
+  "home": {
+    "welcome": "Bienvenido a DataPath",
+    "description": "La estructura base, sistema de temas e internacionalización están listos. Listo para construir el contenido educativo.",
+    "currentTheme": "Tema actual",
+    "currentLanguage": "Idioma actual"
+  }
+}

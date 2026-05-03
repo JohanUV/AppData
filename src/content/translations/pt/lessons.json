@@ -1,0 +1,13 @@
+{
+  "title": "Lições",
+  "empty": "Ainda não há lições disponíveis. Volte em breve.",
+  "progress": {
+    "completed": "Concluída",
+    "inProgress": "Em progresso",
+    "locked": "Bloqueada"
+  },
+  "card": {
+    "duration": "{minutes} min",
+    "xp": "{xp} XP"
+  }
+}

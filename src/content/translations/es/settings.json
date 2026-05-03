@@ -1,0 +1,29 @@
+{
+  "title": "Ajustes",
+  "subtitle": "Personaliza la experiencia de DataPath",
+  "sections": {
+    "appearance": {
+      "title": "Apariencia",
+      "description": "Tema visual y modo claro/oscuro",
+      "themeLabel": "Tema",
+      "modeLabel": "Modo",
+      "modeLight": "Claro",
+      "modeDark": "Oscuro"
+    },
+    "language": {
+      "title": "Idioma",
+      "description": "Idioma de la interfaz y del contenido",
+      "label": "Idioma de la aplicación"
+    },
+    "account": {
+      "title": "Cuenta",
+      "description": "Perfil local. La sincronización en la nube llegará pronto.",
+      "placeholder": "Sin cuenta configurada"
+    },
+    "ai": {
+      "title": "Tutor IA",
+      "description": "Configura los proveedores de IA para el chat asistente",
+      "placeholder": "Sin API keys configuradas"
+    }
+  }
+}

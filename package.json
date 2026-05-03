@@ -27,16 +27,20 @@
     "@radix-ui/react-scroll-area": "^1.2.1",
     "@radix-ui/react-separator": "^1.1.0",
     "@radix-ui/react-slot": "^1.1.0",
+    "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-tabs": "^1.1.1",
     "@radix-ui/react-toast": "^1.2.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "framer-motion": "^11.18.2",
     "lucide-react": "^0.460.0",
     "next": "14.2.18",
+    "next-intl": "^3.26.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwind-merge": "^2.5.4",
-    "tailwindcss-animate": "^1.0.7"
+    "tailwindcss-animate": "^1.0.7",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@types/node": "^20.17.6",
@@ -64,7 +68,11 @@
     "node": ">=20"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["electron", "esbuild", "unrs-resolver"]
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild",
+      "unrs-resolver"
+    ]
   },
   "build": {
     "appId": "com.datapath.app",
@@ -78,14 +86,20 @@
       "package.json"
     ],
     "win": {
-      "target": ["nsis"]
+      "target": [
+        "nsis"
+      ]
     },
     "mac": {
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "category": "public.app-category.education"
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "category": "Education"
     }
   }

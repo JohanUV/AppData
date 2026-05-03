@@ -1,0 +1,13 @@
+{
+  "title": "Lessons",
+  "empty": "No lessons available yet. Check back soon.",
+  "progress": {
+    "completed": "Completed",
+    "inProgress": "In progress",
+    "locked": "Locked"
+  },
+  "card": {
+    "duration": "{minutes} min",
+    "xp": "{xp} XP"
+  }
+}

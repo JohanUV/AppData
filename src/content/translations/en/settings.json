@@ -1,0 +1,29 @@
+{
+  "title": "Settings",
+  "subtitle": "Customize your DataPath experience",
+  "sections": {
+    "appearance": {
+      "title": "Appearance",
+      "description": "Visual theme and light/dark mode",
+      "themeLabel": "Theme",
+      "modeLabel": "Mode",
+      "modeLight": "Light",
+      "modeDark": "Dark"
+    },
+    "language": {
+      "title": "Language",
+      "description": "Interface and content language",
+      "label": "App language"
+    },
+    "account": {
+      "title": "Account",
+      "description": "Local profile. Cloud sync coming soon.",
+      "placeholder": "No account configured"
+    },
+    "ai": {
+      "title": "AI Tutor",
+      "description": "Configure AI providers for the assistant chat",
+      "placeholder": "No API keys configured"
+    }
+  }
+}
