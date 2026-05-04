@@ -4,7 +4,7 @@ const nextConfig = {
   images: { unoptimized: true },
   trailingSlash: true,
   reactStrictMode: true,
-  // Electron carga archivos vía file:// — usar rutas relativas
+  // Electron carga archivos vía file:// — usar rutas relativas en producción
   assetPrefix: process.env.NODE_ENV === 'production' ? './' : undefined,
 };
 

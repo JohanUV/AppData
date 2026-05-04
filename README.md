@@ -6,8 +6,8 @@ App de escritorio educativa para aprender **Data Engineering** desde cero. Local
 
 ## Stack
 
-- **Electron 33** — runtime de escritorio (Windows / macOS / Linux).
-- **Next.js 14** (App Router, exportación estática) + **React 18**.
+- **Electron 41** — runtime de escritorio (Windows / macOS / Linux).
+- **Next.js 16** (App Router, Turbopack, exportación estática) + **React 19.2**.
 - **TypeScript** en modo `strict`.
 - **Tailwind CSS** + **shadcn/ui** (Radix primitives).
 - **Zustand** para state management _(se agrega en Fase 3)_.
