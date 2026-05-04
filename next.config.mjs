@@ -1,11 +1,17 @@
+import createMDX from '@next/mdx';
+
+const withMDX = createMDX({
+  extension: /\.mdx?$/,
+});
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'export',
   images: { unoptimized: true },
   trailingSlash: true,
   reactStrictMode: true,
-  // Electron carga archivos vía file:// — usar rutas relativas en producción
+  pageExtensions: ['ts', 'tsx', 'mdx'],
   assetPrefix: process.env.NODE_ENV === 'production' ? './' : undefined,
 };
 
-export default nextConfig;
+export default withMDX(nextConfig);

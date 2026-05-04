@@ -1,0 +1,192 @@
+## ¿Qué es Data Engineering?
+
+**Data Engineering** es la disciplina que se encarga de diseñar, construir y mantener
+las infraestructuras y pipelines que mueven datos desde sus orígenes hasta los
+sistemas analíticos donde se extrae valor.
+
+A diferencia de un Data Scientist, que se enfoca en sacar conclusiones de los datos,
+un Data Engineer construye los caminos por los que esos datos viajan: de manera
+**confiable, escalable y reproducible**.
+
+<Callout type="info" title="Idea clave">
+  Sin un buen pipeline de datos, los modelos de Machine Learning más sofisticados
+  no sirven de nada: basura entra, basura sale.
+</Callout>
+
+### El ciclo de vida del dato
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[Fuentes] -->|Extracción| B[Staging]
+  B -->|Transformación| C[Data Warehouse]
+  C -->|Modelado| D[Marts]
+  D -->|Consumo| E[BI / ML]`}
+</Diagram>
+
+### Stack típico
+
+Hoy en día un equipo de Data Engineering suele combinar:
+
+- **Orquestación**: Airflow, Dagster, Prefect.
+- **Procesamiento batch**: Spark, dbt, BigQuery.
+- **Procesamiento streaming**: Kafka, Flink, Kinesis.
+- **Almacenamiento**: S3, GCS, HDFS, Iceberg.
+- **Lenguajes**: Python y SQL son la dupla universal.
+
+<CodeBlock language="sql" filename="ejemplo.sql">
+{`-- Una transformación SQL típica en un Data Warehouse
+SELECT
+  date_trunc('day', event_at)        AS day,
+  count(distinct user_id)            AS dau,
+  sum(amount)                        AS revenue
+FROM events.purchases
+WHERE event_at >= current_date - 30
+GROUP BY 1
+ORDER BY 1;`}
+</CodeBlock>
+
+<Callout type="tip" title="Recuerda">
+  El 80% del tiempo de un Data Engineer se va en mover, limpiar y validar datos.
+  El 20% restante en la lógica de negocio. Aceptarlo es el primer paso.
+</Callout>
+
+---
+
+## Quiz: comprensión
+
+<Quiz
+  id="intro-quiz"
+  xpReward={50}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Cuál de estas tareas es responsabilidad de un Data Engineer?',
+      options: [
+        'Entrenar un modelo de regresión logística',
+        'Diseñar un pipeline ETL diario que mueva datos de S3 a Snowflake',
+        'Diseñar el wireframe de una página de marketing',
+        'Negociar el contrato con el proveedor de cloud',
+      ],
+      correctIndex: 1,
+      explanation: 'El núcleo del rol es construir y mantener pipelines de datos.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Python y SQL son los dos lenguajes más usados en Data Engineering.',
+      correct: true,
+      explanation: 'SQL para consultar; Python para orquestar y transformar fuera del warehouse.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q3',
+      prompt: 'Completa la cláusula que filtra filas en SQL.',
+      template: 'SELECT * FROM events ___ event_at >= current_date - 7;',
+      answer: 'WHERE',
+      caseSensitive: false,
+      explanation: 'WHERE filtra filas antes del agrupamiento.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q4',
+      prompt: 'Ordena las etapas típicas de un pipeline ELT.',
+      steps: ['Extract', 'Load', 'Transform', 'Serve'],
+      explanation: 'En ELT cargamos crudo y transformamos dentro del warehouse.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="intro-exercise-sum"
+  title="Suma de columnas"
+  description="Implementa una función `sumColumn(rows, column)` que sume los valores de una columna numérica en un array de objetos."
+  language="javascript"
+  starterCode={`function sumColumn(rows, column) {
+  // Tu código aquí
+  return 0;
+}
+
+// No modifiques las siguientes líneas:
+const data = [
+  { user: 'a', amount: 10 },
+  { user: 'b', amount: 25 },
+  { user: 'c', amount: 7 },
+];
+const answer = sumColumn(data, 'amount');
+console.log('total:', answer);`}
+  solution={`function sumColumn(rows, column) {
+  return rows.reduce((acc, r) => acc + (r[column] ?? 0), 0);
+}
+
+const data = [
+  { user: 'a', amount: 10 },
+  { user: 'b', amount: 25 },
+  { user: 'c', amount: 7 },
+];
+const answer = sumColumn(data, 'amount');
+console.log('total:', answer);`}
+  hints={[
+    'Recorre el array y acumula los valores. Array.prototype.reduce viene bien aquí.',
+    'Maneja el caso donde la columna pueda no existir (usa ?? 0).',
+  ]}
+  tests={[
+    { description: 'answer === 42 para los datos de demo', assert: 'answer === 42' },
+    {
+      description: 'sumColumn devuelve 0 con un array vacío',
+      assert: 'sumColumn([], "amount") === 0',
+    },
+    {
+      description: 'ignora valores nulos en la columna',
+      assert: 'sumColumn([{a:1},{a:null},{a:2}], "a") === 3',
+    },
+  ]}
+/>
+
+---
+
+## Mini-proyecto
+
+<Project
+  id="intro-project-pipeline-design"
+  title="Diseña tu primer pipeline"
+  description="Antes de tocar código, plantéa el diseño de un pipeline de datos sencillo. Escribe tus respuestas en un cuaderno o documento personal y luego marca cada paso."
+  xpReward={150}
+  steps={[
+    {
+      id: 'p1',
+      title: 'Define la fuente de datos',
+      description: 'Elige un origen real (API pública, base de datos, archivos CSV).',
+      successCriteria: 'Tienes documentado: nombre, formato, frecuencia de actualización, volumen estimado.',
+      resources: [{ label: 'Lista de APIs públicas', href: 'https://github.com/public-apis/public-apis' }],
+    },
+    {
+      id: 'p2',
+      title: 'Define la transformación principal',
+      description: '¿Qué quieres calcular? Ejemplos: KPIs diarios, dataset enriquecido, métricas en streaming.',
+      successCriteria: 'Sabes qué columnas/agregaciones produces y por qué.',
+    },
+    {
+      id: 'p3',
+      title: 'Elige destino y consumidor',
+      description: 'Decide a dónde aterrizan los datos y quién los consume (BI, modelo ML, dashboard).',
+      successCriteria: 'Tu destino es coherente con el patrón de consumo (analítico vs operacional).',
+    },
+    {
+      id: 'p4',
+      title: 'Esboza el grafo del pipeline',
+      description: 'Dibuja un diagrama con etapas, dependencias y triggers.',
+      successCriteria: 'Tienes un diagrama (papel o digital) que cubre extracción → transformación → carga.',
+    },
+  ]}
+/>
+
+---
+
+¡Felicidades por completar tu primera lección! Continúa con la siguiente para
+profundizar en el modelo de almacenamiento moderno.

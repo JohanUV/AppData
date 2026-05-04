@@ -1,0 +1,191 @@
+## What is Data Engineering?
+
+**Data Engineering** is the discipline of designing, building and maintaining the
+infrastructure and pipelines that move data from its sources to the analytical
+systems where value is extracted.
+
+Unlike a Data Scientist, who focuses on drawing conclusions from data, a Data
+Engineer builds the roads the data travels on: **reliably, at scale, and reproducibly**.
+
+<Callout type="info" title="Key idea">
+  Without a solid data pipeline, the most sophisticated ML models are useless.
+  Garbage in, garbage out.
+</Callout>
+
+### The data lifecycle
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[Sources] -->|Extract| B[Staging]
+  B -->|Transform| C[Data Warehouse]
+  C -->|Modeling| D[Marts]
+  D -->|Consume| E[BI / ML]`}
+</Diagram>
+
+### Typical stack
+
+A Data Engineering team today usually combines:
+
+- **Orchestration**: Airflow, Dagster, Prefect.
+- **Batch processing**: Spark, dbt, BigQuery.
+- **Stream processing**: Kafka, Flink, Kinesis.
+- **Storage**: S3, GCS, HDFS, Iceberg.
+- **Languages**: Python and SQL are the universal duo.
+
+<CodeBlock language="sql" filename="example.sql">
+{`-- A typical SQL transformation in a Data Warehouse
+SELECT
+  date_trunc('day', event_at)        AS day,
+  count(distinct user_id)            AS dau,
+  sum(amount)                        AS revenue
+FROM events.purchases
+WHERE event_at >= current_date - 30
+GROUP BY 1
+ORDER BY 1;`}
+</CodeBlock>
+
+<Callout type="tip" title="Remember">
+  80% of a Data Engineer's time is moving, cleaning and validating data. The
+  remaining 20% is business logic. Accepting this is step one.
+</Callout>
+
+---
+
+## Comprehension quiz
+
+<Quiz
+  id="intro-quiz"
+  xpReward={50}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Which task belongs to a Data Engineer?',
+      options: [
+        'Train a logistic regression model',
+        'Design a daily ETL pipeline that moves data from S3 to Snowflake',
+        'Design the wireframe of a marketing page',
+        'Negotiate the cloud-vendor contract',
+      ],
+      correctIndex: 1,
+      explanation: 'The core role is building and maintaining data pipelines.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Python and SQL are the most-used languages in Data Engineering.',
+      correct: true,
+      explanation: 'SQL to query; Python to orchestrate and transform outside the warehouse.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q3',
+      prompt: 'Complete the row-filter clause in SQL.',
+      template: 'SELECT * FROM events ___ event_at >= current_date - 7;',
+      answer: 'WHERE',
+      caseSensitive: false,
+      explanation: 'WHERE filters rows before grouping.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q4',
+      prompt: 'Order the typical stages of an ELT pipeline.',
+      steps: ['Extract', 'Load', 'Transform', 'Serve'],
+      explanation: 'In ELT we load raw and transform inside the warehouse.',
+    },
+  ]}
+/>
+
+---
+
+## Hands-on exercise
+
+<Exercise
+  id="intro-exercise-sum"
+  title="Column sum"
+  description="Implement `sumColumn(rows, column)` that sums the values of a numeric column in an array of objects."
+  language="javascript"
+  starterCode={`function sumColumn(rows, column) {
+  // Your code here
+  return 0;
+}
+
+// Don't modify the following lines:
+const data = [
+  { user: 'a', amount: 10 },
+  { user: 'b', amount: 25 },
+  { user: 'c', amount: 7 },
+];
+const answer = sumColumn(data, 'amount');
+console.log('total:', answer);`}
+  solution={`function sumColumn(rows, column) {
+  return rows.reduce((acc, r) => acc + (r[column] ?? 0), 0);
+}
+
+const data = [
+  { user: 'a', amount: 10 },
+  { user: 'b', amount: 25 },
+  { user: 'c', amount: 7 },
+];
+const answer = sumColumn(data, 'amount');
+console.log('total:', answer);`}
+  hints={[
+    'Walk the array and accumulate the values. Array.prototype.reduce works well here.',
+    'Handle the case where the column may be missing (use ?? 0).',
+  ]}
+  tests={[
+    { description: 'answer === 42 for the demo data', assert: 'answer === 42' },
+    {
+      description: 'sumColumn returns 0 for an empty array',
+      assert: 'sumColumn([], "amount") === 0',
+    },
+    {
+      description: 'ignores null values in the column',
+      assert: 'sumColumn([{a:1},{a:null},{a:2}], "a") === 3',
+    },
+  ]}
+/>
+
+---
+
+## Mini project
+
+<Project
+  id="intro-project-pipeline-design"
+  title="Design your first pipeline"
+  description="Before any code, sketch the design of a simple data pipeline. Write your answers in a notebook or doc and then check off each step."
+  xpReward={150}
+  steps={[
+    {
+      id: 'p1',
+      title: 'Define the data source',
+      description: 'Pick a real origin (public API, database, CSV files).',
+      successCriteria: 'You have documented: name, format, refresh frequency, estimated volume.',
+      resources: [{ label: 'Public APIs list', href: 'https://github.com/public-apis/public-apis' }],
+    },
+    {
+      id: 'p2',
+      title: 'Define the main transformation',
+      description: 'What do you want to compute? Daily KPIs, an enriched dataset, streaming metrics.',
+      successCriteria: 'You know which columns/aggregations you produce and why.',
+    },
+    {
+      id: 'p3',
+      title: 'Pick destination and consumer',
+      description: 'Decide where the data lands and who consumes it (BI, ML model, dashboard).',
+      successCriteria: 'Your destination is coherent with the consumption pattern (analytical vs operational).',
+    },
+    {
+      id: 'p4',
+      title: 'Sketch the pipeline graph',
+      description: 'Draw a diagram with stages, dependencies and triggers.',
+      successCriteria: 'You have a diagram (paper or digital) that covers extract → transform → load.',
+    },
+  ]}
+/>
+
+---
+
+Congrats on finishing your first lesson! Continue with the next one to dive
+deeper into modern storage models.

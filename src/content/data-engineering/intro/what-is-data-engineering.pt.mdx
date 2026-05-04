@@ -1,0 +1,192 @@
+## O que é Data Engineering?
+
+**Data Engineering** é a disciplina que projeta, constrói e mantém a
+infraestrutura e os pipelines que movem dados das suas origens aos sistemas
+analíticos onde o valor é extraído.
+
+Diferente de um Data Scientist, focado em tirar conclusões dos dados, um Data
+Engineer constrói os caminhos pelos quais os dados viajam: de forma
+**confiável, escalável e reproduzível**.
+
+<Callout type="info" title="Ideia chave">
+  Sem um pipeline sólido, os modelos de ML mais sofisticados são inúteis.
+  Lixo entra, lixo sai.
+</Callout>
+
+### O ciclo de vida do dado
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[Fontes] -->|Extração| B[Staging]
+  B -->|Transformação| C[Data Warehouse]
+  C -->|Modelagem| D[Marts]
+  D -->|Consumo| E[BI / ML]`}
+</Diagram>
+
+### Stack típica
+
+Hoje uma equipe de Data Engineering geralmente combina:
+
+- **Orquestração**: Airflow, Dagster, Prefect.
+- **Processamento batch**: Spark, dbt, BigQuery.
+- **Processamento streaming**: Kafka, Flink, Kinesis.
+- **Armazenamento**: S3, GCS, HDFS, Iceberg.
+- **Linguagens**: Python e SQL são a dupla universal.
+
+<CodeBlock language="sql" filename="exemplo.sql">
+{`-- Uma transformação SQL típica em um Data Warehouse
+SELECT
+  date_trunc('day', event_at)        AS day,
+  count(distinct user_id)            AS dau,
+  sum(amount)                        AS revenue
+FROM events.purchases
+WHERE event_at >= current_date - 30
+GROUP BY 1
+ORDER BY 1;`}
+</CodeBlock>
+
+<Callout type="tip" title="Lembre-se">
+  80% do tempo de um Data Engineer vai em mover, limpar e validar dados.
+  Os 20% restantes em lógica de negócio. Aceitar isso é o primeiro passo.
+</Callout>
+
+---
+
+## Quiz de compreensão
+
+<Quiz
+  id="intro-quiz"
+  xpReward={50}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Qual tarefa é responsabilidade de um Data Engineer?',
+      options: [
+        'Treinar um modelo de regressão logística',
+        'Desenhar um pipeline ETL diário que move dados do S3 ao Snowflake',
+        'Desenhar o wireframe de uma página de marketing',
+        'Negociar o contrato com o provedor cloud',
+      ],
+      correctIndex: 1,
+      explanation: 'O cerne da função é construir e manter pipelines de dados.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Python e SQL são as duas linguagens mais usadas em Data Engineering.',
+      correct: true,
+      explanation: 'SQL para consultar; Python para orquestrar e transformar fora do warehouse.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q3',
+      prompt: 'Complete a cláusula que filtra linhas em SQL.',
+      template: 'SELECT * FROM events ___ event_at >= current_date - 7;',
+      answer: 'WHERE',
+      caseSensitive: false,
+      explanation: 'WHERE filtra linhas antes do agrupamento.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q4',
+      prompt: 'Ordene as etapas típicas de um pipeline ELT.',
+      steps: ['Extract', 'Load', 'Transform', 'Serve'],
+      explanation: 'Em ELT carregamos cru e transformamos dentro do warehouse.',
+    },
+  ]}
+/>
+
+---
+
+## Exercício prático
+
+<Exercise
+  id="intro-exercise-sum"
+  title="Soma de coluna"
+  description="Implemente `sumColumn(rows, column)` que soma os valores de uma coluna numérica em um array de objetos."
+  language="javascript"
+  starterCode={`function sumColumn(rows, column) {
+  // Seu código aqui
+  return 0;
+}
+
+// Não modifique as linhas a seguir:
+const data = [
+  { user: 'a', amount: 10 },
+  { user: 'b', amount: 25 },
+  { user: 'c', amount: 7 },
+];
+const answer = sumColumn(data, 'amount');
+console.log('total:', answer);`}
+  solution={`function sumColumn(rows, column) {
+  return rows.reduce((acc, r) => acc + (r[column] ?? 0), 0);
+}
+
+const data = [
+  { user: 'a', amount: 10 },
+  { user: 'b', amount: 25 },
+  { user: 'c', amount: 7 },
+];
+const answer = sumColumn(data, 'amount');
+console.log('total:', answer);`}
+  hints={[
+    'Percorra o array e acumule os valores. Array.prototype.reduce funciona bem.',
+    'Trate o caso em que a coluna pode não existir (use ?? 0).',
+  ]}
+  tests={[
+    { description: 'answer === 42 para os dados de demo', assert: 'answer === 42' },
+    {
+      description: 'sumColumn devolve 0 com array vazio',
+      assert: 'sumColumn([], "amount") === 0',
+    },
+    {
+      description: 'ignora valores nulos na coluna',
+      assert: 'sumColumn([{a:1},{a:null},{a:2}], "a") === 3',
+    },
+  ]}
+/>
+
+---
+
+## Mini-projeto
+
+<Project
+  id="intro-project-pipeline-design"
+  title="Desenhe seu primeiro pipeline"
+  description="Antes de qualquer código, esboce o desenho de um pipeline simples. Escreva suas respostas em um caderno ou doc e depois marque cada passo."
+  xpReward={150}
+  steps={[
+    {
+      id: 'p1',
+      title: 'Defina a fonte de dados',
+      description: 'Escolha uma origem real (API pública, banco, CSV).',
+      successCriteria: 'Você documentou: nome, formato, frequência de atualização, volume estimado.',
+      resources: [{ label: 'Lista de APIs públicas', href: 'https://github.com/public-apis/public-apis' }],
+    },
+    {
+      id: 'p2',
+      title: 'Defina a transformação principal',
+      description: 'O que quer calcular? KPIs diários, dataset enriquecido, métricas em streaming.',
+      successCriteria: 'Você sabe quais colunas/agregações produz e por quê.',
+    },
+    {
+      id: 'p3',
+      title: 'Escolha destino e consumidor',
+      description: 'Decida onde os dados aterrissam e quem consome (BI, modelo ML, dashboard).',
+      successCriteria: 'Seu destino é coerente com o padrão de consumo (analítico vs operacional).',
+    },
+    {
+      id: 'p4',
+      title: 'Esboce o grafo do pipeline',
+      description: 'Desenhe um diagrama com etapas, dependências e gatilhos.',
+      successCriteria: 'Você tem um diagrama (papel ou digital) cobrindo extração → transformação → carga.',
+    },
+  ]}
+/>
+
+---
+
+Parabéns por concluir sua primeira lição! Continue com a próxima para se
+aprofundar nos modelos de armazenamento modernos.
