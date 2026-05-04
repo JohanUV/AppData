@@ -1,5 +1,6 @@
 import { app, BrowserWindow, shell } from 'electron';
 import path from 'node:path';
+import { registerIpcHandlers } from './ipc/handlers';
 
 const isDev = process.env.NODE_ENV === 'development';
 const DEV_URL = 'http://localhost:3000';
@@ -26,7 +27,6 @@ function createWindow(): void {
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());
 
-  // Abrir enlaces externos en el navegador del sistema
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
@@ -36,11 +36,12 @@ function createWindow(): void {
     void mainWindow.loadURL(DEV_URL);
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    void mainWindow.loadFile(path.join(__dirname, '..', 'out', 'index.html'));
+    void mainWindow.loadFile(path.join(__dirname, '..', '..', 'out', 'index.html'));
   }
 }
 
 app.whenReady().then(() => {
+  registerIpcHandlers();
   createWindow();
 
   app.on('activate', () => {

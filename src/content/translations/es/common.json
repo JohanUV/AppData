@@ -5,6 +5,7 @@
   },
   "nav": {
     "home": "Inicio",
+    "dashboard": "Dashboard",
     "courses": "Cursos",
     "practice": "Práctica",
     "achievements": "Logros",

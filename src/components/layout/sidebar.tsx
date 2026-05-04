@@ -7,6 +7,7 @@ import {
   BookOpen,
   Database,
   Home,
+  LayoutDashboard,
   LineChart,
   PanelLeftClose,
   PanelLeftOpen,
@@ -21,12 +22,13 @@ import { cn } from '@/lib/utils';
 
 interface NavItem {
   href: string;
-  labelKey: 'home' | 'courses' | 'practice' | 'achievements' | 'stats' | 'settings';
+  labelKey: 'home' | 'dashboard' | 'courses' | 'practice' | 'achievements' | 'stats' | 'settings';
   icon: React.ComponentType<{ className?: string }>;
 }
 
 const navItems: NavItem[] = [
   { href: '/', labelKey: 'home', icon: Home },
+  { href: '/dashboard', labelKey: 'dashboard', icon: LayoutDashboard },
   { href: '/courses', labelKey: 'courses', icon: BookOpen },
   { href: '/practice', labelKey: 'practice', icon: Sparkles },
   { href: '/achievements', labelKey: 'achievements', icon: Trophy },

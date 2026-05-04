@@ -11,8 +11,9 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "outDir": "../dist-electron",
-    "rootDir": ".",
-    "sourceMap": true
+    "rootDir": "..",
+    "sourceMap": true,
+    "baseUrl": ".."
   },
-  "include": ["**/*.ts"]
+  "include": ["**/*.ts", "../src/lib/db/**/*.ts", "../src/lib/gamification/**/*.ts"]
 }

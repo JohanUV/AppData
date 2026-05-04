@@ -4,7 +4,7 @@
   "private": true,
   "description": "App de escritorio educativa para aprender Data Engineering",
   "author": "DataPath",
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "concurrently -k -n NEXT,ELECTRON -c blue,green \"pnpm dev:next\" \"pnpm dev:electron\"",
     "dev:next": "next dev -p 3000",
@@ -18,7 +18,10 @@
     "type-check": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,css}\"",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "db:generate": "drizzle-kit generate",
+    "rebuild:native": "node scripts/fetch-electron-prebuilds.mjs",
+    "postinstall": "node scripts/fetch-electron-prebuilds.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.6",
@@ -30,8 +33,11 @@
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-tabs": "^1.1.3",
     "@radix-ui/react-toast": "^1.2.6",
+    "better-sqlite3": "^12.9.0",
+    "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "drizzle-orm": "^0.38.4",
     "framer-motion": "^11.18.2",
     "lucide-react": "^0.460.0",
     "next": "^16.2.4",
@@ -43,12 +49,16 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^22.10.5",
     "@types/react": "^19.0.7",
     "@types/react-dom": "^19.0.3",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
+    "drizzle-kit": "^0.30.6",
     "electron": "^41.5.0",
     "electron-builder": "^25.1.8",
     "eslint": "^9.18.0",
@@ -66,7 +76,12 @@
     "node": ">=20.9"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["electron", "esbuild", "unrs-resolver"]
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild",
+      "unrs-resolver",
+      "better-sqlite3"
+    ]
   },
   "build": {
     "appId": "com.datapath.app",
@@ -80,14 +95,20 @@
       "package.json"
     ],
     "win": {
-      "target": ["nsis"]
+      "target": [
+        "nsis"
+      ]
     },
     "mac": {
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "category": "public.app-category.education"
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "category": "Education"
     }
   }

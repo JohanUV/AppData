@@ -1,0 +1,29 @@
+{
+  "dashboard": {
+    "title": "Your progress",
+    "subtitle": "Overview of your activity and achievements",
+    "stats": {
+      "totalXp": "Total XP",
+      "lessons": "Lessons",
+      "time": "Study time",
+      "rank": "Current rank"
+    },
+    "heatmap": "Last 90 days activity",
+    "recent": "Recent activity",
+    "recentEmpty": "No activity yet. Start learning!",
+    "suggested": "Suggested next lesson",
+    "suggestedDescription": "Once we add content in the next phase, smart recommendations will appear here.",
+    "suggestedCta": "Browse courses",
+    "achievements": "Recent achievements",
+    "demoTitle": "Demo mode",
+    "demoDescription": "No real lessons yet. Use this button to simulate completing a lesson and verify that persistence, gamification and badges work end-to-end.",
+    "demoButton": "Simulate lesson complete (+50 XP)"
+  },
+  "ranks": {
+    "apprentice": "Apprentice",
+    "practitioner": "Practitioner",
+    "expert": "Expert",
+    "master": "Master",
+    "enlightened": "Enlightened"
+  }
+}

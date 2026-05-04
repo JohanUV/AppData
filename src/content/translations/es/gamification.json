@@ -1,0 +1,29 @@
+{
+  "dashboard": {
+    "title": "Tu progreso",
+    "subtitle": "Resumen de tu actividad y logros",
+    "stats": {
+      "totalXp": "XP total",
+      "lessons": "Lecciones",
+      "time": "Tiempo de estudio",
+      "rank": "Rango actual"
+    },
+    "heatmap": "Actividad de los últimos 90 días",
+    "recent": "Actividad reciente",
+    "recentEmpty": "Aún no tienes actividad. ¡Comienza a aprender!",
+    "suggested": "Próxima lección sugerida",
+    "suggestedDescription": "Cuando agreguemos contenido en la siguiente fase, aquí verás recomendaciones inteligentes.",
+    "suggestedCta": "Explorar cursos",
+    "achievements": "Logros recientes",
+    "demoTitle": "Modo demo",
+    "demoDescription": "Aún no hay lecciones reales. Usa este botón para simular la finalización de una lección y verificar que la persistencia, gamificación y badges funcionan.",
+    "demoButton": "Simular lección completada (+50 XP)"
+  },
+  "ranks": {
+    "apprentice": "Aprendiz",
+    "practitioner": "Practicante",
+    "expert": "Experto",
+    "master": "Maestro",
+    "enlightened": "Iluminado"
+  }
+}
