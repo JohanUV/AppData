@@ -33,7 +33,47 @@ Hoje uma equipe de Data Engineering geralmente combina:
 - **Armazenamento**: S3, GCS, HDFS, Iceberg.
 - **Linguagens**: Python e SQL são a dupla universal.
 
-<CodeBlock language="sql" filename="exemplo.sql">
+<AnnotatedCode
+  language="sql"
+  filename="exemplo.sql"
+  annotations={[
+    {
+      match: "date_trunc('day', event_at)",
+      title: 'Truncar ao dia',
+      body: 'Converte timestamps com hora exata (ex. 14:32:11) para o início do dia (00:00:00). Coloca todos os eventos do mesmo dia no mesmo balde para agregá-los.',
+    },
+    {
+      match: 'count(distinct user_id)',
+      title: 'DAU — Daily Active Users',
+      body: 'Conta usuários únicos do grupo. Se o mesmo user_id aparece 5 vezes no dia, conta 1, não 5. Métrica chave de engajamento.',
+    },
+    {
+      match: 'sum(amount)',
+      title: 'Soma agregada',
+      body: 'Soma todos os valores de amount dentro do grupo (cada dia). Resultado: receita total por dia.',
+    },
+    {
+      match: 'events.purchases',
+      title: 'schema.tabela',
+      body: 'Notação schema.tabela. Warehouses geralmente são organizados em schemas como raw, staging, marts. Aqui "events" é o schema e "purchases" a tabela.',
+    },
+    {
+      match: 'WHERE event_at >= current_date - 30',
+      title: 'Janela temporal',
+      body: 'Filtra antes de agrupar: processa apenas os últimos 30 dias. Crítico para performance — evita escanear todo o histórico.',
+    },
+    {
+      match: 'GROUP BY 1',
+      title: 'Agrupar pela coluna 1',
+      body: 'Agrupa linhas que compartilham o mesmo valor na primeira coluna do SELECT (day). Sem isso, count() e sum() colapsariam tudo a uma única linha.',
+    },
+    {
+      match: 'ORDER BY 1',
+      title: 'Ordenar pela coluna 1',
+      body: 'Ordena o resultado ascendente pela primeira coluna (day). Saída final cronológica.',
+    },
+  ]}
+>
 {`-- Uma transformação SQL típica em um Data Warehouse
 SELECT
   date_trunc('day', event_at)        AS day,
@@ -43,7 +83,7 @@ FROM events.purchases
 WHERE event_at >= current_date - 30
 GROUP BY 1
 ORDER BY 1;`}
-</CodeBlock>
+</AnnotatedCode>
 
 <Callout type="tip" title="Lembre-se">
   80% do tempo de um Data Engineer vai em mover, limpar e validar dados.

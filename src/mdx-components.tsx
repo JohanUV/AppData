@@ -1,6 +1,7 @@
 import type { MDXComponents } from 'mdx/types';
 import { Callout } from '@/components/content/callout';
 import { CodeBlock } from '@/components/content/code-block';
+import { AnnotatedCode } from '@/components/content/annotated-code';
 import { Diagram } from '@/components/content/diagram';
 import { Quiz } from '@/components/content/quiz';
 import { Exercise } from '@/components/content/exercise';
@@ -50,6 +51,7 @@ export function useMDXComponents(components: MDXComponents): MDXComponents {
     hr: (props) => <hr className="my-8 border-border/60" {...props} />,
     Callout,
     CodeBlock,
+    AnnotatedCode,
     Diagram,
     Quiz,
     Exercise,
