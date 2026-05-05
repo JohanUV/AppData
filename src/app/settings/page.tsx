@@ -1,6 +1,7 @@
 'use client';
 
-import { Bot, Languages, Moon, Palette, Sun, User } from 'lucide-react';
+import { Languages, Moon, Palette, Sun, User } from 'lucide-react';
+import { AISection } from '@/components/settings/ai-section';
 import { useTranslations } from 'next-intl';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -160,24 +161,8 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      {/* Tutor IA (placeholder) */}
-      <Card className="opacity-80">
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Bot className="h-4 w-4 text-primary" />
-            <CardTitle>{t('sections.ai.title')}</CardTitle>
-            <Badge variant="secondary" className="ml-auto">
-              {tc('actions.continue')}…
-            </Badge>
-          </div>
-          <CardDescription>{t('sections.ai.description')}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
-            {t('sections.ai.placeholder')}
-          </div>
-        </CardContent>
-      </Card>
+      {/* Tutor IA */}
+      <AISection />
     </div>
   );
 }

@@ -2,8 +2,9 @@
 // renderer NO importe nada de electron/ ni de drizzle (que tirarían better-sqlite3
 // al bundle del cliente).
 
-import type { Translations, BadgeCriteria } from '@/lib/db/schema';
+import type { Translations, BadgeCriteria, AIMessage } from '@/lib/db/schema';
 import type { LevelProgress, Rank } from '@/lib/gamification/levels';
+import type { ProviderId } from '@/lib/ai/providers-meta';
 
 export interface CurrentUser {
   id: number;
@@ -78,6 +79,43 @@ export interface CompleteLessonResult {
   }>;
 }
 
+// ── Tutor IA ──
+export interface AIPrefs {
+  activeProvider: ProviderId;
+  fallbackEnabled: boolean;
+  fallbackProvider: ProviderId | null;
+  modelByProvider: Record<string, string>;
+}
+
+export interface AIConversation {
+  id: number;
+  userId: number;
+  lessonSlug: string;
+  provider: string;
+  model: string;
+  messages: AIMessage[];
+  createdAt: number | Date;
+  updatedAt: number | Date;
+}
+
+export interface AIUsageMap {
+  [provider: string]: { requests: number; tokens: number };
+}
+
+export interface AIFallbackLog {
+  provider: ProviderId;
+  ok: boolean;
+  error?: string;
+  ts: number;
+}
+
+export type AIChunkPayload =
+  | { type: 'started'; provider: ProviderId; model: string }
+  | { type: 'delta'; text: string }
+  | { type: 'done'; provider: ProviderId; model: string }
+  | { type: 'aborted' }
+  | { type: 'error'; error: string; status?: number };
+
 export interface DatapathAPI {
   readonly platform: NodeJS.Platform;
   readonly versions: NodeJS.ProcessVersions;
@@ -101,6 +139,36 @@ export interface DatapathAPI {
     }) => Promise<CompleteLessonResult>;
   };
   locale: { track: (locale: string) => Promise<void> };
+  ai: {
+    encryptionAvailable: () => Promise<boolean>;
+    getSettings: () => Promise<AIPrefs>;
+    saveSettings: (patch: Partial<AIPrefs>) => Promise<AIPrefs>;
+    saveKey: (p: {
+      provider: ProviderId;
+      key: string;
+      customEndpoint?: string;
+    }) => Promise<{ ok: boolean; error?: string }>;
+    deleteKey: (provider: ProviderId) => Promise<{ ok: boolean }>;
+    configuredProviders: () => Promise<ProviderId[]>;
+    validateKey: (p: {
+      provider: ProviderId;
+      key: string;
+      customEndpoint?: string;
+    }) => Promise<{ ok: boolean; error?: string }>;
+    usageToday: () => Promise<AIUsageMap>;
+    fallbackLogs: () => Promise<AIFallbackLog[]>;
+    getConversation: (lessonSlug: string) => Promise<AIConversation | null>;
+    clearConversation: (lessonSlug: string) => Promise<{ ok: boolean }>;
+    startChat: (p: {
+      streamId: string;
+      lessonSlug: string;
+      systemPrompt: string;
+      userMessage: string;
+      forceProvider?: ProviderId;
+    }) => Promise<{ ok: boolean }>;
+    cancelChat: (streamId: string) => Promise<{ ok: boolean }>;
+    onChunk: (streamId: string, cb: (payload: AIChunkPayload) => void) => () => void;
+  };
 }
 
 declare global {

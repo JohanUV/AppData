@@ -105,4 +105,43 @@ CREATE TABLE IF NOT EXISTS daily_activity (
   time_spent INTEGER NOT NULL DEFAULT 0
 );
 CREATE UNIQUE INDEX IF NOT EXISTS daily_activity_user_date_uq ON daily_activity(user_id, date);
+
+CREATE TABLE IF NOT EXISTS ai_settings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  active_provider TEXT NOT NULL DEFAULT 'cerebras',
+  fallback_enabled INTEGER NOT NULL DEFAULT 1,
+  fallback_provider TEXT,
+  model_by_provider TEXT NOT NULL DEFAULT '{}',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+
+CREATE TABLE IF NOT EXISTS ai_keys (
+  provider TEXT PRIMARY KEY,
+  encrypted_key TEXT NOT NULL,
+  custom_endpoint TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+
+CREATE TABLE IF NOT EXISTS ai_conversations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  lesson_slug TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  messages_json TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ai_conversations_user_lesson_uq ON ai_conversations(user_id, lesson_slug);
+
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  date TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  requests INTEGER NOT NULL DEFAULT 0,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ai_usage_uq ON ai_usage(user_id, date, provider);
 `;

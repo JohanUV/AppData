@@ -3,11 +3,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useTranslations } from 'next-intl';
-import { ArrowLeft, ArrowRight, Bot, CheckCircle2, Clock, ListChecks, Sparkles } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CheckCircle2, Clock, ListChecks, Sparkles } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
+import { AITutorPanel } from '@/components/ai-tutor/ai-tutor-panel';
 import {
   getLesson,
   getLessonsByModule,
@@ -199,28 +200,22 @@ export function LessonView({ slug }: LessonViewProps) {
           </footer>
         </article>
 
-        {/* AI tutor placeholder */}
+        {/* AI tutor */}
         <aside className="hidden lg:block">
           <div className="sticky top-6 space-y-3">
+            <AITutorPanel
+              lessonSlug={slug}
+              lessonTitle={lesson.meta.title[locale]}
+              lessonExcerpt={lesson.meta.description[locale]}
+            />
             <Card>
-              <CardContent className="space-y-3 p-4">
-                <div className="flex items-center gap-2">
-                  <Bot className="h-4 w-4 text-primary" />
-                  <span className="text-sm font-medium">Tutor IA</span>
-                  <Badge variant="secondary" className="ml-auto text-[10px]">Fase 5</Badge>
+              <CardContent className="space-y-2 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                  Progreso de lectura
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Próximamente: el tutor verá tu lección actual y responderá con tu API key
-                  gratuita (Cerebras, Groq, Gemini, OpenRouter).
-                </p>
-                <div>
-                  <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-                    Progreso
-                  </div>
-                  <Progress value={readingPct} />
-                  <div className="mt-1 text-right text-[10px] text-muted-foreground">
-                    {Math.round(readingPct)}%
-                  </div>
+                <Progress value={readingPct} />
+                <div className="text-right text-[10px] text-muted-foreground">
+                  {Math.round(readingPct)}%
                 </div>
               </CardContent>
             </Card>

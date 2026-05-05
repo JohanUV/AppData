@@ -229,6 +229,85 @@ export const dailyActivity = sqliteTable(
 // ──────────────────────────────────────────────────────────────────────
 // Tipos derivados para uso en main + renderer
 // ──────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────
+// Tutor IA — settings, keys, conversaciones y uso
+// ──────────────────────────────────────────────────────────────────────
+export const aiSettings = sqliteTable('ai_settings', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  activeProvider: text('active_provider').notNull().default('cerebras'),
+  fallbackEnabled: integer('fallback_enabled', { mode: 'boolean' }).notNull().default(true),
+  fallbackProvider: text('fallback_provider'),
+  modelByProvider: text('model_by_provider', { mode: 'json' })
+    .$type<Record<string, string>>()
+    .notNull()
+    .default({}),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
+});
+
+export const aiKeys = sqliteTable('ai_keys', {
+  provider: text('provider').primaryKey(),
+  encryptedKey: text('encrypted_key').notNull(),
+  customEndpoint: text('custom_endpoint'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' })
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
+});
+
+export type AIRole = 'system' | 'user' | 'assistant';
+export interface AIMessage {
+  role: AIRole;
+  content: string;
+  ts?: number;
+}
+
+export const aiConversations = sqliteTable(
+  'ai_conversations',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    lessonSlug: text('lesson_slug').notNull(),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    messages: text('messages_json', { mode: 'json' }).$type<AIMessage[]>().notNull().default([]),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (t) => ({
+    convoUserLessonUq: uniqueIndex('ai_conversations_user_lesson_uq').on(t.userId, t.lessonSlug),
+  }),
+);
+
+export const aiUsage = sqliteTable(
+  'ai_usage',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    date: text('date').notNull(), // YYYY-MM-DD
+    provider: text('provider').notNull(),
+    requests: integer('requests').notNull().default(0),
+    inputTokens: integer('input_tokens').notNull().default(0),
+    outputTokens: integer('output_tokens').notNull().default(0),
+  },
+  (t) => ({
+    usageUq: uniqueIndex('ai_usage_uq').on(t.userId, t.date, t.provider),
+  }),
+);
+
+export type AISettings = typeof aiSettings.$inferSelect;
+export type AIKey = typeof aiKeys.$inferSelect;
+export type AIConversation = typeof aiConversations.$inferSelect;
+export type AIUsage = typeof aiUsage.$inferSelect;
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Badge = typeof badges.$inferSelect;
