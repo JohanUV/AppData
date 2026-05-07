@@ -1,0 +1,290 @@
+## Window functions II: LAG, LEAD, SUM OVER
+
+The window functions from the last lesson give you ranking. Today's let
+you **look at other rows** from the current one: previous row (`LAG`),
+next (`LEAD`), or all preceding accumulated (`SUM OVER`). Indispensable
+for time series analysis.
+
+### LAG and LEAD
+
+<AnnotatedCode
+  language="sql"
+  filename="lag-lead.sql"
+  annotations={[
+    {
+      match: 'LAG(amount, 1)',
+      title: 'Previous row value',
+      body: 'LAG(col, n) returns the value of col n rows back within the ordered partition. n=1 = immediately previous.',
+    },
+    {
+      match: 'LEAD(amount, 1)',
+      title: 'Next row value',
+      body: 'Like LAG but forward. LEAD(col) defaults to 1 row ahead.',
+    },
+    {
+      match: ', 0)',
+      title: 'Default value',
+      body: 'Optional 3rd arg: what to return if there is no previous/next row. Default is NULL; here 0.',
+    },
+  ]}
+>
+{`SELECT
+  user_id,
+  created_at,
+  amount,
+  LAG(amount, 1, 0) OVER (PARTITION BY user_id ORDER BY created_at) AS prev_amount,
+  LEAD(amount, 1) OVER (PARTITION BY user_id ORDER BY created_at) AS next_amount,
+  amount - LAG(amount, 1, 0) OVER (PARTITION BY user_id ORDER BY created_at) AS delta
+FROM payments;`}
+</AnnotatedCode>
+
+Typical case: detect gaps between events.
+
+```sql
+SELECT
+  user_id,
+  created_at,
+  EXTRACT(EPOCH FROM (
+    created_at - LAG(created_at) OVER (PARTITION BY user_id ORDER BY created_at)
+  )) / 86400 AS days_since_last_order
+FROM orders;
+```
+
+### Running totals: SUM OVER with ORDER BY
+
+```sql
+SELECT
+  user_id,
+  created_at,
+  amount,
+  SUM(amount) OVER (PARTITION BY user_id ORDER BY created_at) AS running_total
+FROM payments;
+```
+
+Each row sees the sum from partition start up to itself. With ORDER BY
+inside OVER, SUM becomes cumulative; without, it sums the whole group.
+
+### Frame clauses: fine-grained control
+
+By default, with `ORDER BY`, the frame is "from partition start to
+current row". You can change it:
+
+```sql
+SUM(amount) OVER (
+  PARTITION BY user_id
+  ORDER BY created_at
+  ROWS BETWEEN 6 PRECEDING AND CURRENT ROW   -- last 7 rows
+)
+```
+
+Frame types:
+
+- `ROWS BETWEEN N PRECEDING AND M FOLLOWING` — physical row count.
+- `RANGE BETWEEN ...` — based on ORDER BY values (handy with dates).
+- `UNBOUNDED PRECEDING` — from the start.
+- `UNBOUNDED FOLLOWING` — to the end.
+- `CURRENT ROW` — the current row.
+
+### 7-day rolling average
+
+```sql
+SELECT
+  date,
+  daily_revenue,
+  AVG(daily_revenue) OVER (
+    ORDER BY date
+    ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+  ) AS rolling_avg_7d
+FROM daily_kpis;
+```
+
+`6 PRECEDING + CURRENT ROW` = 7-row window. For exact dates (tolerating
+missing days), use `RANGE`:
+
+```sql
+RANGE BETWEEN INTERVAL '6 days' PRECEDING AND CURRENT ROW
+```
+
+### FIRST_VALUE and LAST_VALUE
+
+```sql
+SELECT
+  user_id,
+  created_at,
+  amount,
+  FIRST_VALUE(amount) OVER (PARTITION BY user_id ORDER BY created_at) AS first_purchase,
+  LAST_VALUE(amount) OVER (
+    PARTITION BY user_id
+    ORDER BY created_at
+    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+  ) AS last_purchase
+FROM payments;
+```
+
+<Callout type="warning" title="LAST_VALUE trap">
+  Default frame with ORDER BY ends at CURRENT ROW, so LAST_VALUE = current
+  row. To get the actual last of the partition, expand the frame with ROWS
+  BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING.
+</Callout>
+
+### Case: identify each user's first purchase
+
+```sql
+WITH first_purchases AS (
+  SELECT
+    user_id,
+    amount,
+    created_at,
+    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) AS rn
+  FROM payments
+)
+SELECT user_id, amount, created_at
+FROM first_purchases
+WHERE rn = 1;
+```
+
+### Case: day-over-day retention
+
+```sql
+WITH daily AS (
+  SELECT
+    date_trunc('day', event_at) AS day,
+    COUNT(DISTINCT user_id) AS dau
+  FROM events GROUP BY 1
+)
+SELECT
+  day,
+  dau,
+  LAG(dau) OVER (ORDER BY day) AS dau_yesterday,
+  100.0 * (dau - LAG(dau) OVER (ORDER BY day)) / LAG(dau) OVER (ORDER BY day) AS pct_change
+FROM daily
+ORDER BY day;
+```
+
+### Common mistakes
+
+- **LAST_VALUE without expanded frame**. Returns current row, not last.
+- **Forgetting ORDER BY in OVER when needed** — LAG, LEAD, running sums
+  become non-deterministic.
+- **Confusing ROWS and RANGE**. ROWS counts physical rows; RANGE counts
+  values. With irregular spacing it matters.
+- **Thinking LAG with NULL "skips"**. It doesn't — it returns the value
+  exactly n positions back.
+
+### Keep learning
+
+- [Mode — advanced window functions](https://mode.com/sql-tutorial/sql-window-functions/)
+- [Postgres — Window Functions](https://www.postgresql.org/docs/current/functions-window.html)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-windows-2-quiz"
+  xpReward={80}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'What does LAG(amount, 1) OVER (ORDER BY created_at) do?',
+      options: [
+        'Adds 1 to amount',
+        'Returns the amount of the previous row by created_at',
+        'Counts previous rows',
+        'Same as ROW_NUMBER',
+      ],
+      correctIndex: 1,
+      explanation: 'LAG(col, n) brings col value n rows back in the ordered partition.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'With ORDER BY inside OVER, SUM(amount) OVER (...) accumulates from partition start to current row.',
+      correct: true,
+      explanation: 'Default frame with ORDER BY is UNBOUNDED PRECEDING ... CURRENT ROW.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'You want a 7-day rolling average over rows. Which frame?',
+      options: [
+        'ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW',
+        'ROWS BETWEEN 6 PRECEDING AND CURRENT ROW',
+        'ROWS BETWEEN 7 PRECEDING AND 7 FOLLOWING',
+        'Not possible',
+      ],
+      correctIndex: 1,
+      explanation: '6 PRECEDING + CURRENT ROW = 7-row window.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Returns the next amount.',
+      template: '___(amount, 1) OVER (ORDER BY created_at)',
+      answer: 'LEAD',
+      caseSensitive: false,
+      explanation: 'LEAD looks forward in the partition.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Why might LAST_VALUE not return what you expect?',
+      options: [
+        'Not standard SQL',
+        'Default frame ends at CURRENT ROW; expand it with UNBOUNDED FOLLOWING',
+        'Only works on dates',
+        'Returns the first value',
+      ],
+      correctIndex: 1,
+      explanation: 'Default frame with ORDER BY ends at CURRENT ROW.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="sql-windows-2-exercise"
+  title="Running total"
+  description="Implement `runningTotal(rows, key)` taking an array of objects with `key` and returning rows with `total` = cumulative sum."
+  language="javascript"
+  starterCode={`function runningTotal(rows, key) {
+  return rows;
+}
+
+console.log(runningTotal([{v:10},{v:20},{v:5}], 'v'));`}
+  solution={`function runningTotal(rows, key) {
+  let acc = 0;
+  return rows.map(r => {
+    acc += r[key];
+    return { ...r, total: acc };
+  });
+}
+console.log(runningTotal([{v:10},{v:20},{v:5}], 'v'));`}
+  hints={[
+    'Keep an accumulator outside map.',
+    'Each row stores the cumulative total up to that point.',
+  ]}
+  tests={[
+    {
+      description: 'cumulative sum',
+      assert: 'runningTotal([{v:10},{v:20}],"v").map(r=>r.total).join(",") === "10,30"',
+    },
+    {
+      description: 'empty',
+      assert: 'runningTotal([],"v").length === 0',
+    },
+    {
+      description: 'preserves other fields',
+      assert: 'runningTotal([{name:"a",v:5}],"v")[0].name === "a"',
+    },
+  ]}
+/>
+
+---
+
+Next: **CASE WHEN and conditional logic**.

@@ -1,0 +1,299 @@
+## JOINs in depth
+
+`JOIN` lets you combine rows from two or more tables based on a related
+column. It's what makes SQL SQL — without it you'd have a giant denormalized
+table and many problems. It's also where most silly errors happen: a bad
+ON condition and your monthly sales report triples.
+
+### The 4 variants you actually use
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[INNER JOIN<br/>matches only] --- B[LEFT JOIN<br/>everything from left<br/>+ matches]
+  B --- C[RIGHT JOIN<br/>rare in practice]
+  C --- D[FULL OUTER JOIN<br/>everything from both]`}
+</Diagram>
+
+Example tables:
+
+```sql
+-- users
+id | name
+1  | Ana
+2  | Beto
+3  | Carla
+
+-- orders
+id | user_id | amount
+10 | 1       | 100
+11 | 1       | 50
+12 | 4       | 80
+```
+
+### INNER JOIN: matches only
+
+```sql
+SELECT u.name, o.amount
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id;
+```
+
+```
+name | amount
+Ana  | 100
+Ana  | 50
+```
+
+Carla doesn't show up (no orders). Beto neither. Order 12 (user_id=4)
+either (no user 4). It's the intersection.
+
+### LEFT JOIN: everything from the left
+
+```sql
+SELECT u.name, o.amount
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id;
+```
+
+```
+name  | amount
+Ana   | 100
+Ana   | 50
+Beto  | NULL
+Carla | NULL
+```
+
+All users appear. Most-used JOIN in analytics: "all users with their
+orders if any".
+
+### RIGHT JOIN: don't bother
+
+```sql
+SELECT u.name, o.amount
+FROM users u
+RIGHT JOIN orders o ON u.id = o.user_id;
+```
+
+Almost always rewritten as LEFT JOIN with tables flipped — more readable.
+
+### FULL OUTER JOIN: everything from both
+
+Brings non-matching rows from either side. Useful for inconsistency
+detection.
+
+### Multiple JOINs
+
+In real life, you chain many tables:
+
+<AnnotatedCode
+  language="sql"
+  filename="multi-join.sql"
+  annotations={[
+    {
+      match: 'AS u',
+      title: 'Aliases for legibility',
+      body: 'Short aliases keep multi-table queries manageable. AS is optional but recommended.',
+    },
+    {
+      match: 'ON u.id = o.user_id',
+      title: 'JOIN condition',
+      body: 'The connecting column. Almost always PK ↔ FK. Wrong condition can explode rows or empty result.',
+    },
+    {
+      match: "AND o.status = 'paid'",
+      title: 'Filters in ON',
+      body: 'You can add filters to ON. Key difference vs WHERE in LEFT JOIN: ON-filter preserves left row with NULLs; WHERE-filter removes it.',
+    },
+    {
+      match: 'LEFT JOIN order_items oi',
+      title: 'Beware row explosion',
+      body: 'If an order has 5 items, this query returns 5 rows per order. To aggregate (total quantity) use GROUP BY or aggregated subquery.',
+    },
+  ]}
+>
+{`SELECT
+  u.name,
+  o.id AS order_id,
+  oi.product_name,
+  oi.quantity
+FROM users AS u
+INNER JOIN orders AS o
+  ON u.id = o.user_id
+  AND o.status = 'paid'
+LEFT JOIN order_items oi
+  ON o.id = oi.order_id
+WHERE u.country = 'CO'
+ORDER BY o.created_at DESC;`}
+</AnnotatedCode>
+
+### The classic error: row explosion
+
+A customer has 3 orders; each order has 4 items. If you do:
+
+```sql
+SELECT u.id, COUNT(*) AS rows
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id
+LEFT JOIN order_items oi ON o.id = oi.order_id
+GROUP BY u.id;
+```
+
+You'll see `12` rows for that user, not 3. The JOIN multiplied. To count
+unique orders use `COUNT(DISTINCT o.id)`. To sum amounts without dups,
+use aggregated subqueries or CTEs.
+
+### Self JOIN
+
+Same table joined to itself. Example: pairs of users from the same
+country:
+
+```sql
+SELECT u1.name AS u1, u2.name AS u2, u1.country
+FROM users u1
+INNER JOIN users u2
+  ON u1.country = u2.country
+  AND u1.id < u2.id;
+```
+
+`u1.id < u2.id` avoids dupes (Ana-Beto and Beto-Ana).
+
+### USING vs ON
+
+```sql
+INNER JOIN orders o ON u.id = o.id    -- explicit
+INNER JOIN orders USING (id)          -- shorter
+```
+
+`USING` is elegant but confusing if column names match by accident.
+Prefer `ON` for clarity.
+
+### Common mistakes
+
+- **Forgetting the JOIN condition** (writing `JOIN orders` without `ON`).
+  Some engines treat as CROSS JOIN — total explosion.
+- **JOINing a table with duplicates** unaware. Verify with
+  `SELECT col, COUNT(*) FROM t GROUP BY col HAVING COUNT(*) > 1`.
+- **LEFT JOIN followed by WHERE on right column**: nullifies the LEFT.
+  Move filter to `ON`.
+- **No aliases**: 4-table queries become unreadable.
+- **Assuming INNER JOIN preserves order**. SQL doesn't guarantee order
+  without `ORDER BY`.
+
+### Keep learning
+
+- [SQL Joins explained — Mode](https://mode.com/sql-tutorial/sql-joins/)
+- [Visualizing SQL Joins](https://blog.codinghorror.com/a-visual-explanation-of-sql-joins/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-joins-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'INNER JOIN returns...',
+      options: [
+        'All rows from left + matches',
+        'Only rows that match in both tables',
+        'All rows from right',
+        'Total combinations (cross join)',
+      ],
+      correctIndex: 1,
+      explanation: 'Intersection: rows with matches in both tables.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'You want "all users with their last order if any". Which JOIN?',
+      options: ['INNER JOIN', 'LEFT JOIN', 'FULL OUTER JOIN', 'CROSS JOIN'],
+      correctIndex: 1,
+      explanation: 'LEFT JOIN preserves all users, NULL-fills the rest.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'A LEFT JOIN followed by `WHERE orders.id IS NULL` returns users without orders.',
+      correct: true,
+      explanation: 'Anti-join pattern: left rows with no match.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Count unique orders avoiding item duplication.',
+      template: 'SELECT u.id, COUNT(___ o.id) FROM users u LEFT JOIN orders o ON ... LEFT JOIN order_items oi ON ... GROUP BY u.id;',
+      answer: 'DISTINCT',
+      caseSensitive: false,
+      explanation: 'COUNT(DISTINCT o.id) deduplicates the inflated order IDs.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q5',
+      prompt: 'Order steps to diagnose "my report triples sales".',
+      steps: [
+        'Check duplicates in each table on the join column',
+        'Count rows per user before aggregating',
+        'Identify the JOIN that inflates',
+        'Add DISTINCT or aggregated subquery',
+      ],
+      explanation: 'Investigate → cause → fix.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="sql-joins-exercise"
+  title="INNER JOIN simulator"
+  description="Implement `innerJoinSimple(left, right, leftKey, rightKey)` taking two arrays of objects and returning the cartesian product filtered where left[leftKey] === right[rightKey]."
+  language="javascript"
+  starterCode={`function innerJoinSimple(left, right, leftKey, rightKey) {
+  return [];
+}
+
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'}];
+const orders = [{user_id:1,amount:100},{user_id:1,amount:50},{user_id:3,amount:80}];
+console.log(innerJoinSimple(users, orders, 'id', 'user_id'));`}
+  solution={`function innerJoinSimple(left, right, leftKey, rightKey) {
+  const out = [];
+  for (const l of left) {
+    for (const r of right) {
+      if (l[leftKey] === r[rightKey]) out.push({ ...l, ...r });
+    }
+  }
+  return out;
+}
+
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'}];
+const orders = [{user_id:1,amount:100},{user_id:1,amount:50},{user_id:3,amount:80}];
+console.log(innerJoinSimple(users, orders, 'id', 'user_id'));`}
+  hints={[
+    'Loop over left, for each loop over right and combine if keys match.',
+    'Use spread (...) to merge objects.',
+  ]}
+  tests={[
+    {
+      description: 'Simple match',
+      assert: 'JSON.stringify(innerJoinSimple([{id:1,n:"a"}],[{uid:1,v:10}],"id","uid")) === \\\'[{"id":1,"n":"a","uid":1,"v":10}]\\\'',
+    },
+    {
+      description: 'No matches → empty',
+      assert: 'innerJoinSimple([{id:1}],[{uid:2}],"id","uid").length === 0',
+    },
+    {
+      description: 'Multiple matches multiply',
+      assert: 'innerJoinSimple([{id:1}],[{uid:1},{uid:1}],"id","uid").length === 2',
+    },
+  ]}
+/>
+
+---
+
+Next: **aggregations and GROUP BY**.

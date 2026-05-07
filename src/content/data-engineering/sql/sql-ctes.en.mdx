@@ -1,0 +1,270 @@
+## CTEs (WITH)
+
+A **CTE** (Common Table Expression) is a named query that lives inside
+your main query. Syntax: the `WITH` clause. Same as a subquery in `FROM`,
+but a hundred times more readable when you have many steps.
+
+If your day-to-day is analytical SQL, CTEs will be your favorite tool.
+Supported in Postgres, BigQuery, Snowflake, Redshift, SQL Server and
+MySQL ≥ 8.
+
+### Basic syntax
+
+```sql
+WITH paid_orders AS (
+  SELECT *
+  FROM orders
+  WHERE status = 'paid'
+)
+SELECT user_id, COUNT(*) AS n
+FROM paid_orders
+GROUP BY user_id;
+```
+
+`paid_orders` is like a "temporary table" for the query. It doesn't
+persist — gone when the query ends.
+
+### Chaining CTEs
+
+```sql
+WITH paid_orders AS (
+  SELECT * FROM orders WHERE status = 'paid'
+),
+user_revenue AS (
+  SELECT user_id, SUM(amount) AS revenue
+  FROM paid_orders
+  GROUP BY user_id
+),
+top_users AS (
+  SELECT user_id FROM user_revenue ORDER BY revenue DESC LIMIT 10
+)
+SELECT u.id, u.name, ur.revenue
+FROM top_users tu
+INNER JOIN users u ON u.id = tu.user_id
+INNER JOIN user_revenue ur ON ur.user_id = tu.user_id
+ORDER BY ur.revenue DESC;
+```
+
+Each CTE builds on previous ones. The final query is trivial because all
+complexity lives in named steps.
+
+### CTE vs subquery: when each?
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[One simple subquery] -->|inline readable| B[Subquery]
+  C[Multiple steps<br/>or reused] -->|named with purpose| D[CTE]`}
+</Diagram>
+
+- **CTE** if the block has a clear purpose (you can name it).
+- **CTE** if you use it more than once in the same query.
+- **Inline subquery** if it's a single line, defensive.
+
+### Materialization: watch out in Postgres
+
+In old Postgres (< 12), CTEs were **always** materialized — computed
+before the main query, no joint optimization. Slow if the CTE is huge
+and the outer filter could limit it.
+
+Postgres ≥ 12 inlines by default. To force:
+
+```sql
+WITH paid_orders AS MATERIALIZED (...)
+WITH paid_orders AS NOT MATERIALIZED (...)
+```
+
+In BigQuery, Snowflake, etc., the optimizer decides. Don't obsess unless
+you see perf issues.
+
+### Recursive CTEs
+
+A CTE can refer **to itself**. Useful for trees, hierarchies, series:
+
+<AnnotatedCode
+  language="sql"
+  filename="recursive-cte.sql"
+  annotations={[
+    {
+      match: 'WITH RECURSIVE',
+      title: 'Keyword',
+      body: 'Marks the CTE as recursive. Without RECURSIVE you cannot self-reference.',
+    },
+    {
+      match: 'SELECT 1, 1',
+      title: 'Base case',
+      body: 'The "anchor": initial rows. Day 1 with value 1 here.',
+    },
+    {
+      match: 'UNION ALL',
+      title: 'Combine anchor + recursion',
+      body: 'UNION ALL is mandatory. UNION (without ALL) deduplicates and may halt recursion.',
+    },
+    {
+      match: 'WHERE n < 10',
+      title: 'Stop condition',
+      body: 'CRITICAL: without it, infinite recursion.',
+    },
+  ]}
+>
+{`-- Generates days 1..10
+WITH RECURSIVE counter (day, value) AS (
+  SELECT 1, 1
+  UNION ALL
+  SELECT day + 1, value * 2
+  FROM counter
+  WHERE day < 10
+)
+SELECT * FROM counter;`}
+</AnnotatedCode>
+
+Result: 1, 2, 4, 8, 16... up to day=10.
+
+### Real case: employee hierarchy
+
+```sql
+WITH RECURSIVE org AS (
+  SELECT id, name, manager_id, 1 AS depth
+  FROM employees
+  WHERE manager_id IS NULL
+  UNION ALL
+  SELECT e.id, e.name, e.manager_id, o.depth + 1
+  FROM employees e
+  INNER JOIN org o ON e.manager_id = o.id
+)
+SELECT * FROM org ORDER BY depth, name;
+```
+
+### Common mistakes
+
+- **Long CTE without good name**: lose the readability benefit.
+- **Recursive CTE without stop condition** or with `UNION` instead of
+  `UNION ALL`. Infinite recursion or wrong result.
+- **Expecting CTEs to speed up**. They perform like subqueries.
+- **Trusting CTE persistence**. It's not a view nor a temp table.
+
+### Keep learning
+
+- [Postgres docs — WITH Queries](https://www.postgresql.org/docs/current/queries-with.html)
+- [Mode — CTEs](https://mode.com/sql-tutorial/sql-cte/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-ctes-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'What is a CTE?',
+      options: [
+        'A persistent table',
+        'A named query that lives only during the query',
+        'A materialized view',
+        'A type of index',
+      ],
+      correctIndex: 1,
+      explanation: 'Exists only during the query that defines it.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'CTEs can chain: one CTE can reference an earlier one in the same WITH.',
+      correct: true,
+      explanation: 'Why they enable readable step-by-step decomposition.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'What does a recursive CTE require?',
+      options: [
+        'Just the RECURSIVE keyword',
+        'Base case + recursive case joined with UNION ALL + stop condition',
+        'A subquery inside',
+        'A trigger',
+      ],
+      correctIndex: 1,
+      explanation: 'Without stop, infinite; UNION (without ALL) may not advance.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Syntax to start a CTE.',
+      template: '___ paid_orders AS (SELECT * FROM orders WHERE status = \\\'paid\\\') SELECT ...',
+      answer: 'WITH',
+      caseSensitive: false,
+      explanation: 'WITH starts one or more CTEs.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'When prefer CTE over subquery?',
+      options: [
+        'Single-line query',
+        'Multiple steps or reused block',
+        'Only in MySQL',
+        'When working with JOINs',
+      ],
+      correctIndex: 1,
+      explanation: 'CTE shines with multi-step nameable queries.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="sql-ctes-exercise"
+  title="Transformation pipeline"
+  description="Implement `pipeline(rows, steps)` where each step is a function taking rows and returning transformed rows. Chain the steps. JS equivalent of chaining CTEs."
+  language="javascript"
+  starterCode={`function pipeline(rows, steps) {
+  return rows;
+}
+
+const data = [{x:1},{x:2},{x:3}];
+const result = pipeline(data, [
+  rs => rs.map(r => ({...r, doubled: r.x * 2})),
+  rs => rs.filter(r => r.doubled >= 4),
+  rs => rs.map(r => r.doubled),
+]);
+console.log(result);`}
+  solution={`function pipeline(rows, steps) {
+  return steps.reduce((acc, fn) => fn(acc), rows);
+}
+const data = [{x:1},{x:2},{x:3}];
+const result = pipeline(data, [
+  rs => rs.map(r => ({...r, doubled: r.x * 2})),
+  rs => rs.filter(r => r.doubled >= 4),
+  rs => rs.map(r => r.doubled),
+]);
+console.log(result);`}
+  hints={[
+    'reduce is the natural tool: acc = fn(acc).',
+    'Each step receives what the previous returned.',
+    'Empty pipeline → return rows untouched.',
+  ]}
+  tests={[
+    {
+      description: 'empty pipeline preserves',
+      assert: 'JSON.stringify(pipeline([1,2,3],[])) === "[1,2,3]"',
+    },
+    {
+      description: 'one step works',
+      assert: 'JSON.stringify(pipeline([1,2],[xs=>xs.map(x=>x*2)])) === "[2,4]"',
+    },
+    {
+      description: 'three steps chain',
+      assert: 'pipeline([1,2,3,4],[xs=>xs.filter(x=>x%2===0),xs=>xs.map(x=>x*10),xs=>xs.reduce((s,x)=>s+x,0)]) === 60',
+    },
+  ]}
+/>
+
+---
+
+Next: **window functions part 1** — modern SQL's most powerful tool.

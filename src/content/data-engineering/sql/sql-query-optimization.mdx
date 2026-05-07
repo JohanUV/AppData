@@ -1,0 +1,373 @@
+## Optimización de queries
+
+Una query lenta nunca es por arte de magia. Hay un cuello de botella
+concreto: full scan, falta de índice, filas explotadas por JOIN mal hecho,
+o motor estimando mal cardinalidades. Esta lección te da el manual de
+diagnóstico y los patrones de optimización que más mover la aguja.
+
+### El proceso de diagnóstico
+
+<Diagram type="mermaid">
+{`flowchart TD
+  A[Query lenta] --> B[Reproducir<br/>con EXPLAIN ANALYZE]
+  B --> C{¿Dónde está<br/>el tiempo?}
+  C -->|Seq Scan| D[Falta índice<br/>o filtro no selectivo]
+  C -->|Sort| E[ORDER BY caro<br/>+ falta índice]
+  C -->|Hash Join enorme| F[Tabla intermedia<br/>infla — revisar JOINs]
+  C -->|Nested Loop con N alto| G[Subquery correlacionada<br/>o lookup repetido]
+  D --> H[Crear índice apropiado]
+  E --> H
+  F --> I[Filtrar antes,<br/>JOIN pequeño primero]
+  G --> J[Reescribir con JOIN]`}
+</Diagram>
+
+### Lee EXPLAIN como un detective
+
+Empieza por la **operación más cara**: tiempo o costo más alto. Trabaja
+de adentro hacia afuera.
+
+```
+QUERY PLAN
+Sort  (cost=2000.00..2050.00 rows=20000 width=64)
+  Sort Key: created_at DESC
+  ->  Hash Join  (cost=500.00..1500.00 rows=20000 width=64)
+        Hash Cond: (o.user_id = u.id)
+        ->  Seq Scan on orders o  (cost=0.00..800.00 rows=80000 width=...)
+              Filter: (status = 'paid')
+        ->  Hash  (cost=200.00..200.00 rows=10000 width=...)
+              ->  Seq Scan on users u  (cost=0.00..200.00 rows=10000 width=...)
+                    Filter: (country = 'CO')
+```
+
+Diagnóstico rápido:
+
+- Seq Scan en `orders` con filtro `status = 'paid'`: si esa columna es
+  selectiva, **falta índice** en `status` (o compuesto con `user_id`).
+- Seq Scan en `users` con filtro `country`: ¿índice en country?
+- Sort al final: si la tabla resultado es grande, considera índice que
+  ya devuelva ordenado.
+
+### Estrategia 1: filtra temprano
+
+Aplica WHERE lo antes posible. En queries con CTEs y JOINs, filtra
+**antes** de joinear, no después:
+
+```sql
+-- ❌ Lento: joinea todo, filtra al final
+SELECT *
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id
+WHERE u.country = 'CO' AND o.status = 'paid';
+
+-- ✓ Mejor: prefiltra cada lado
+WITH co_users AS (
+  SELECT * FROM users WHERE country = 'CO'
+),
+paid_orders AS (
+  SELECT * FROM orders WHERE status = 'paid'
+)
+SELECT *
+FROM co_users u
+LEFT JOIN paid_orders o ON u.id = o.user_id;
+```
+
+(Postgres ≥ 12 puede inlinear las CTEs y aplicar predicados push-down
+automáticamente, pero ser explícito ayuda al optimizador y al lector.)
+
+### Estrategia 2: índices en columnas correctas
+
+Las columnas que aparecen en `WHERE`, `JOIN ON`, `ORDER BY` con LIMIT son
+candidatas. Cubre las tres reglas:
+
+1. Filtra mucho (alta cardinalidad).
+2. Selectiva (poca de la tabla coincide).
+3. Frecuentemente consultada.
+
+Para queries con `WHERE col1 = X AND col2 > Y ORDER BY col3`, considera
+índice compuesto `(col1, col2, col3)`.
+
+### Estrategia 3: cuidado con SELECT *
+
+`SELECT *` lee todas las columnas. Si la tabla tiene un campo TEXT
+gigante o un BLOB, lo arrastras. Si tu índice cubre las columnas que
+necesitas, el motor puede hacer **index-only scan**: ni toca la tabla.
+
+```sql
+-- Lectura sólo del índice
+CREATE INDEX idx_users_email_id ON users(email, id);
+SELECT id FROM users WHERE email = 'x';
+```
+
+### Estrategia 4: LIMIT temprano cambia el plan
+
+```sql
+-- Sin LIMIT: ordena todo
+SELECT * FROM events ORDER BY created_at DESC;
+
+-- Con LIMIT 100: si hay índice en created_at, lee 100 entradas y para
+SELECT * FROM events ORDER BY created_at DESC LIMIT 100;
+```
+
+El optimizador es más agresivo cuando ve LIMIT pequeño: prefiere index
+scan ordenado en vez de sort.
+
+### Estrategia 5: agregaciones costosas
+
+`COUNT(DISTINCT col)` sobre tablas enormes es caro. Alternativas:
+
+- `APPROX_COUNT_DISTINCT(col)` (BigQuery, Redshift): error menor al 1%, mucho más
+  rápido.
+- `HyperLogLog` (Postgres con extension, Snowflake nativo).
+- Pre-agregar a una tabla diaria y consultar la agregada.
+
+### Estrategia 6: particionamiento (warehouses)
+
+En BigQuery/Snowflake/Redshift, no hay B-tree. La optimización pasa por:
+
+- **Particionamiento** por fecha o columna de filtrado típico.
+- **Clustering** por columnas frecuentes en WHERE.
+- **Pre-agregación** en tablas materializadas.
+
+Un `WHERE date = '2026-01-15'` sobre una tabla particionada por día sólo
+escanea esa partición — orden de magnitud más rápido.
+
+### Estrategia 7: evita cartesianos accidentales
+
+```sql
+-- Si olvidas la condición ON, FULL OUTER JOIN se vuelve cross join
+SELECT *
+FROM orders, order_items;   -- ¡cross join implícito!
+```
+
+Resultado: N × M filas. Garantizado en motores antiguos, error en motores
+modernos. Siempre `JOIN ... ON` explícito.
+
+### Estrategia 8: refactoriza subqueries correlacionadas
+
+```sql
+-- ❌ N evaluaciones de la subquery
+SELECT u.name,
+  (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) AS n
+FROM users u;
+
+-- ✓ Una sola pasada
+SELECT u.name, COALESCE(o.n, 0) AS n
+FROM users u
+LEFT JOIN (
+  SELECT user_id, COUNT(*) AS n FROM orders GROUP BY user_id
+) o ON u.id = o.user_id;
+```
+
+### Estrategia 9: estadísticas actualizadas
+
+Postgres usa estadísticas (`ANALYZE`) para planear queries. Si tablas
+crecen mucho sin `ANALYZE`, los planes se vuelven malos. Programa
+`VACUUM ANALYZE` periódico (autovacuum suele bastar pero verifica).
+
+### Errores comunes
+
+- **Optimizar antes de medir**. Sin EXPLAIN no sabes qué arreglar.
+- **Crear índices "por si acaso"** sin evidencia.
+- **Agregar `LIMIT 100` para "probar"** y olvidarse de quitarlo en el
+  pipeline real.
+- **Comparar performance en dev** (datos pequeños) y asumir que se
+  comporta igual en prod.
+- **Olvidar que cache afecta**: la primera ejecución es lenta (lectura
+  de disco), las siguientes son rápidas (cache). Compara con cache
+  caliente o limpio igual en cada test.
+
+### Para seguir aprendiendo
+
+- [Use The Index, Luke!](https://use-the-index-luke.com/)
+- [Postgres Performance Tips](https://www.postgresql.org/docs/current/performance-tips.html)
+- [BigQuery — Optimizing query performance](https://cloud.google.com/bigquery/docs/best-practices-performance-overview)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-query-opt-quiz"
+  xpReward={80}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Primer paso para optimizar una query lenta:',
+      options: [
+        'Agregar más índices',
+        'Reproducir con EXPLAIN ANALYZE para ver el plan real',
+        'Reescribir todo a CTE',
+        'Cambiar de motor',
+      ],
+      correctIndex: 1,
+      explanation: 'Sin EXPLAIN, optimizas a ciegas.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'En warehouses columnares como BigQuery, los índices B-tree no son la herramienta principal.',
+      correct: true,
+      explanation: 'Allí el rendimiento depende de particionamiento + clustering, no de índices.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Una subquery correlacionada con N filas externas se evalúa...',
+      options: [
+        'Una vez',
+        'N veces (una por cada fila externa)',
+        'Sólo en EXPLAIN',
+        'Nunca, falla en runtime',
+      ],
+      correctIndex: 1,
+      explanation: 'Por eso casi siempre se reescribe con JOIN agregado.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Sustituye COUNT(DISTINCT col) lento en BigQuery con la función aproximada.',
+      template: '___(col) AS uniques',
+      answer: 'APPROX_COUNT_DISTINCT',
+      caseSensitive: false,
+      explanation: 'APPROX_COUNT_DISTINCT usa HyperLogLog: ~1% error, orden de magnitud más rápido.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q5',
+      prompt: 'Ordena los pasos de optimización.',
+      steps: [
+        'Reproducir y medir baseline',
+        'EXPLAIN ANALYZE para localizar cuello',
+        'Probar 1 cambio (índice/refactor)',
+        'Medir de nuevo',
+        'Decidir si vale la pena mantener',
+      ],
+      explanation: 'Medir → diagnosticar → cambio → medir → decidir.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="sql-query-opt-exercise"
+  title="Análisis simulado de plan de query"
+  description="Dado un objeto que representa un plan, devuelve un array de strings con recomendaciones simples basadas en señales: 'Seq Scan' en tabla con > 100k filas → 'falta índice'; 'Sort' al final → 'considerar ORDER BY indexado'."
+  language="javascript"
+  starterCode={`function diagnose(plan) {
+  // plan: { topOp: 'Sort'|'HashJoin'|...,
+  //         scans: [{ type: 'Seq'|'Index', table: '...', rows: N }] }
+  return [];
+}
+
+console.log(diagnose({
+  topOp: 'Sort',
+  scans: [
+    { type: 'Seq', table: 'orders', rows: 1000000 },
+    { type: 'Index', table: 'users', rows: 5000 },
+  ],
+}));`}
+  solution={`function diagnose(plan) {
+  const out = [];
+  if (plan.topOp === 'Sort') out.push('considerar ORDER BY indexado');
+  for (const s of plan.scans || []) {
+    if (s.type === 'Seq' && s.rows >= 100000) {
+      out.push(\`falta índice en \${s.table}\`);
+    }
+  }
+  return out;
+}
+console.log(diagnose({
+  topOp: 'Sort',
+  scans: [
+    { type: 'Seq', table: 'orders', rows: 1000000 },
+    { type: 'Index', table: 'users', rows: 5000 },
+  ],
+}));`}
+  hints={[
+    'Verifica plan.topOp para señal de Sort caro.',
+    'Recorre plan.scans buscando Seq Scan en tablas grandes.',
+  ]}
+  tests={[
+    {
+      description: 'Seq Scan grande detectado',
+      assert: 'diagnose({topOp:"Hash",scans:[{type:"Seq",table:"orders",rows:200000}]}).join(",").includes("orders")',
+    },
+    {
+      description: 'Sort detectado',
+      assert: 'diagnose({topOp:"Sort",scans:[]}).join(",").includes("ORDER BY")',
+    },
+    {
+      description: 'plan saludable: sin recomendaciones',
+      assert: 'diagnose({topOp:"Hash",scans:[{type:"Index",table:"users",rows:1000000}]}).length === 0',
+    },
+  ]}
+/>
+
+---
+
+## Mini-proyecto del módulo
+
+<Project
+  id="sql-module-project"
+  title="Dashboard de KPIs en SQL"
+  description="Aplica todo lo aprendido construyendo un set de queries que generen métricas de negocio reales sobre un dataset público."
+  xpReward={400}
+  steps={[
+    {
+      id: 's1',
+      title: 'Carga el dataset Chinook (música) o Sakila (alquiler de pelis)',
+      description: 'Ambos son datasets gratuitos pensados para enseñar SQL. Usa SQLite local o un Postgres en docker.',
+      successCriteria: 'Tienes el schema cargado y puedes correr SELECT count(*) sobre cada tabla.',
+      resources: [
+        { label: 'Chinook DB', href: 'https://github.com/lerocha/chinook-database' },
+        { label: 'Sakila DB', href: 'https://dev.mysql.com/doc/sakila/en/' },
+      ],
+    },
+    {
+      id: 's2',
+      title: 'KPI 1 — Top 10 clientes por revenue (LEFT JOIN + GROUP BY)',
+      description: 'Une customer + invoice + invoice_line. Cuidado con la explosión de filas (DISTINCT al sumar).',
+      successCriteria: 'Lista de 10 clientes ordenada por total_revenue DESC.',
+    },
+    {
+      id: 's3',
+      title: 'KPI 2 — Revenue mensual con CTE',
+      description: 'date_trunc por mes. Usa CTE para preprocesar invoices.',
+      successCriteria: 'Una fila por mes con revenue, número de facturas, ticket promedio.',
+    },
+    {
+      id: 's4',
+      title: 'KPI 3 — Top 3 géneros por país (window function)',
+      description: 'ROW_NUMBER() OVER (PARTITION BY country ORDER BY units DESC). Filtra rn <= 3.',
+      successCriteria: 'Para cada country tienes 3 géneros con sus ventas.',
+    },
+    {
+      id: 's5',
+      title: 'KPI 4 — Cliente "first vs repeat" (CASE WHEN + window)',
+      description: 'Usa ROW_NUMBER por customer ordenado por fecha; clasifica primera compra vs siguientes.',
+      successCriteria: 'Cada invoice etiquetada como first/repeat. Conteo agregado.',
+    },
+    {
+      id: 's6',
+      title: 'KPI 5 — Promedio móvil 30 días (window con frame)',
+      description: 'AVG sobre revenue diario con ROWS BETWEEN 29 PRECEDING AND CURRENT ROW.',
+      successCriteria: 'Serie diaria con avg suavizado.',
+    },
+    {
+      id: 's7',
+      title: 'Optimiza: corre EXPLAIN sobre tu KPI más lento',
+      description: 'Identifica un Seq Scan, agrega un índice y compara antes/después.',
+      successCriteria: 'Tienes EXPLAIN antes (con Seq Scan) y después (con Index Scan); la query es más rápida.',
+    },
+  ]}
+/>
+
+---
+
+¡Felicidades, completaste el Módulo 1! Acabas de desbloquear **"SQL
+Ninja"**. Próximo módulo: **Python para Data Engineering**.

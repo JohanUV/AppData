@@ -1,0 +1,242 @@
+## Window functions II: LAG, LEAD, SUM OVER
+
+As window functions da lição anterior dão ranking. As de hoje permitem
+**olhar para outras filas** a partir da atual: anterior (`LAG`),
+próxima (`LEAD`), ou todas as anteriores acumuladas (`SUM OVER`).
+Indispensáveis para séries temporais.
+
+### LAG e LEAD
+
+<AnnotatedCode
+  language="sql"
+  filename="lag-lead.sql"
+  annotations={[
+    {
+      match: 'LAG(amount, 1)',
+      title: 'Valor da linha anterior',
+      body: 'LAG(col, n) retorna valor de col n linhas atrás.',
+    },
+    {
+      match: 'LEAD(amount, 1)',
+      title: 'Valor da próxima linha',
+      body: 'Análogo ao LAG mas para frente.',
+    },
+    {
+      match: ', 0)',
+      title: 'Valor padrão',
+      body: '3º arg opcional: o que retornar se não houver linha. Default NULL; aqui 0.',
+    },
+  ]}
+>
+{`SELECT
+  user_id,
+  created_at,
+  amount,
+  LAG(amount, 1, 0) OVER (PARTITION BY user_id ORDER BY created_at) AS prev_amount,
+  LEAD(amount, 1) OVER (PARTITION BY user_id ORDER BY created_at) AS next_amount,
+  amount - LAG(amount, 1, 0) OVER (PARTITION BY user_id ORDER BY created_at) AS delta
+FROM payments;`}
+</AnnotatedCode>
+
+### Soma acumulada
+
+```sql
+SELECT
+  user_id, created_at, amount,
+  SUM(amount) OVER (PARTITION BY user_id ORDER BY created_at) AS running_total
+FROM payments;
+```
+
+Com ORDER BY dentro do OVER, SUM acumula desde o início da partição até
+a linha atual.
+
+### Frame clauses
+
+```sql
+SUM(amount) OVER (
+  PARTITION BY user_id
+  ORDER BY created_at
+  ROWS BETWEEN 6 PRECEDING AND CURRENT ROW   -- últimas 7 filas
+)
+```
+
+Tipos: `ROWS BETWEEN N PRECEDING AND M FOLLOWING` (filas físicas);
+`RANGE BETWEEN ...` (baseado em valores ORDER BY); `UNBOUNDED PRECEDING/
+FOLLOWING`; `CURRENT ROW`.
+
+### Média móvel de 7 dias
+
+```sql
+SELECT
+  date,
+  daily_revenue,
+  AVG(daily_revenue) OVER (
+    ORDER BY date
+    ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+  ) AS rolling_avg_7d
+FROM daily_kpis;
+```
+
+### FIRST_VALUE e LAST_VALUE
+
+<Callout type="warning" title="LAST_VALUE traiçoeiro">
+  Frame padrão com ORDER BY termina em CURRENT ROW, então LAST_VALUE =
+  linha atual. Para realmente a última, expanda com ROWS BETWEEN
+  UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING.
+</Callout>
+
+```sql
+LAST_VALUE(amount) OVER (
+  PARTITION BY user_id
+  ORDER BY created_at
+  ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+) AS last_purchase
+```
+
+### Caso: primeira compra de cada user
+
+```sql
+WITH first_purchases AS (
+  SELECT *,
+    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) AS rn
+  FROM payments
+)
+SELECT * FROM first_purchases WHERE rn = 1;
+```
+
+### Caso: retenção dia-sobre-dia
+
+```sql
+WITH daily AS (
+  SELECT date_trunc('day', event_at) AS day,
+         COUNT(DISTINCT user_id) AS dau
+  FROM events GROUP BY 1
+)
+SELECT
+  day, dau,
+  LAG(dau) OVER (ORDER BY day) AS dau_yesterday,
+  100.0 * (dau - LAG(dau) OVER (ORDER BY day)) / LAG(dau) OVER (ORDER BY day) AS pct_change
+FROM daily ORDER BY day;
+```
+
+### Erros comuns
+
+- **LAST_VALUE sem frame estendido**.
+- **Esquecer ORDER BY em OVER quando precisa**.
+- **Confundir ROWS e RANGE**.
+
+### Para continuar aprendendo
+
+- [Postgres — Window Functions](https://www.postgresql.org/docs/current/functions-window.html)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-windows-2-quiz"
+  xpReward={80}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'O que faz LAG(amount, 1) OVER (ORDER BY created_at)?',
+      options: [
+        'Soma 1 ao amount',
+        'Retorna o amount da linha anterior',
+        'Conta linhas anteriores',
+        'Mesmo que ROW_NUMBER',
+      ],
+      correctIndex: 1,
+      explanation: 'LAG(col, n) traz valor de col n filas atrás.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Com ORDER BY dentro do OVER, SUM(amount) OVER (...) acumula até a linha atual.',
+      correct: true,
+      explanation: 'Frame default com ORDER BY é UNBOUNDED PRECEDING ... CURRENT ROW.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Média móvel de 7 dias sobre filas. Qual frame?',
+      options: [
+        'ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW',
+        'ROWS BETWEEN 6 PRECEDING AND CURRENT ROW',
+        'ROWS BETWEEN 7 PRECEDING AND 7 FOLLOWING',
+        'Não dá',
+      ],
+      correctIndex: 1,
+      explanation: '6 PRECEDING + CURRENT ROW = 7 filas.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Próximo valor de amount.',
+      template: '___(amount, 1) OVER (ORDER BY created_at)',
+      answer: 'LEAD',
+      caseSensitive: false,
+      explanation: 'LEAD olha para frente.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Por que LAST_VALUE pode não retornar o esperado?',
+      options: [
+        'Não é padrão SQL',
+        'Frame default termina em CURRENT ROW; estenda com UNBOUNDED FOLLOWING',
+        'Só com datas',
+        'Retorna o primeiro',
+      ],
+      correctIndex: 1,
+      explanation: 'Frame default acaba na linha atual.',
+    },
+  ]}
+/>
+
+---
+
+## Exercício prático
+
+<Exercise
+  id="sql-windows-2-exercise"
+  title="Soma acumulada"
+  description="Implemente `runningTotal(rows, key)`."
+  language="javascript"
+  starterCode={`function runningTotal(rows, key) {
+  return rows;
+}
+
+console.log(runningTotal([{v:10},{v:20},{v:5}], 'v'));`}
+  solution={`function runningTotal(rows, key) {
+  let acc = 0;
+  return rows.map(r => {
+    acc += r[key];
+    return { ...r, total: acc };
+  });
+}
+console.log(runningTotal([{v:10},{v:20},{v:5}], 'v'));`}
+  hints={[
+    'Mantenha um acumulador externo ao map.',
+  ]}
+  tests={[
+    {
+      description: 'soma acumulada',
+      assert: 'runningTotal([{v:10},{v:20}],"v").map(r=>r.total).join(",") === "10,30"',
+    },
+    {
+      description: 'array vazio',
+      assert: 'runningTotal([],"v").length === 0',
+    },
+    {
+      description: 'preserva campos',
+      assert: 'runningTotal([{name:"a",v:5}],"v")[0].name === "a"',
+    },
+  ]}
+/>
+
+---
+
+Próxima lição: **CASE WHEN e lógica condicional**.

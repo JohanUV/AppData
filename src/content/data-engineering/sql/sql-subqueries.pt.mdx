@@ -1,0 +1,242 @@
+## Subqueries
+
+Uma **subquery** é uma query dentro de outra. Permite decompor problemas
+complexos em passos. Base mental para entender CTEs (próxima lição).
+
+### Três lugares onde aparecem
+
+1. **No `SELECT`** — devolvem valor escalar.
+2. **No `FROM`** — "tabela derivada".
+3. **No `WHERE`** — filtram contra outro conjunto.
+
+### Subquery escalar (em SELECT)
+
+```sql
+SELECT
+  user_id,
+  amount,
+  (SELECT AVG(amount) FROM payments) AS global_avg,
+  amount - (SELECT AVG(amount) FROM payments) AS deviation
+FROM payments;
+```
+
+### Subquery correlacionada
+
+```sql
+SELECT
+  u.id,
+  u.name,
+  (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) AS orders_count
+FROM users u;
+```
+
+Reavaliada para cada linha externa. Útil mas caro — geralmente reescrita
+como `LEFT JOIN + GROUP BY`.
+
+### Subquery em FROM
+
+```sql
+SELECT country, AVG(orders_per_user) AS avg_per_user
+FROM (
+  SELECT u.country, u.id, COUNT(o.id) AS orders_per_user
+  FROM users u
+  LEFT JOIN orders o ON u.id = o.user_id
+  GROUP BY u.country, u.id
+) AS user_summary
+GROUP BY country;
+```
+
+<Callout type="info" title="Tabela derivada vs CTE">
+  Funcionalmente equivalentes na maioria dos casos. CTE ganha em
+  legibilidade quando há vários passos.
+</Callout>
+
+### IN
+
+```sql
+-- Users que compraram
+SELECT id FROM users WHERE id IN (SELECT DISTINCT user_id FROM orders);
+
+-- Users que NUNCA compraram
+SELECT id FROM users
+WHERE id NOT IN (SELECT user_id FROM orders WHERE user_id IS NOT NULL);
+```
+
+<Callout type="warning" title="NULL e NOT IN">
+  Se a subquery puder retornar NULL, NOT IN retorna UNKNOWN para tudo.
+  Resultado: 0 linhas. Use NOT EXISTS ou filtre os NULLs.
+</Callout>
+
+### EXISTS / NOT EXISTS
+
+<AnnotatedCode
+  language="sql"
+  filename="exists.sql"
+  annotations={[
+    {
+      match: 'WHERE EXISTS',
+      title: 'Existe ao menos uma linha',
+      body: 'EXISTS retorna true se a subquery produzir ≥ 1 linha.',
+    },
+    {
+      match: 'SELECT 1',
+      title: 'O que projeta não importa',
+      body: 'EXISTS só verifica se há linhas; o SELECT interno é ignorado.',
+    },
+    {
+      match: 'WHERE o.user_id = u.id',
+      title: 'Correlação',
+      body: 'Conecta a subquery a cada user externo.',
+    },
+    {
+      match: 'NOT EXISTS',
+      title: 'Anti-join NULL-safe',
+      body: 'Diferente de NOT IN, funciona com NULLs.',
+    },
+  ]}
+>
+{`-- Users COM orders
+SELECT u.id, u.name
+FROM users u
+WHERE EXISTS (
+  SELECT 1 FROM orders o WHERE o.user_id = u.id
+);
+
+-- Users SEM orders
+SELECT u.id, u.name
+FROM users u
+WHERE NOT EXISTS (
+  SELECT 1 FROM orders o WHERE o.user_id = u.id
+);`}
+</AnnotatedCode>
+
+### IN vs EXISTS vs JOIN
+
+- **EXISTS** seguro com NULLs, costuma ser rápido.
+- **IN** legível, cuidado com NULLs.
+- **JOIN + DISTINCT** legível se já está fazendo outros joins.
+
+### Erros comuns
+
+- **Subquery escalar com mais de uma linha** — erro em runtime.
+- **`NOT IN` com NULLs**.
+- **Subqueries correlacionadas aninhadas** = N×M evaluations.
+- **Subquery quando JOIN basta**.
+
+### Para continuar aprendendo
+
+- [Mode SQL — subqueries](https://mode.com/sql-tutorial/sql-sub-queries/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-subqueries-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Uma subquery escalar...',
+      options: [
+        'Retorna qualquer número de linhas',
+        'Retorna exatamente uma linha e uma coluna',
+        'Só funciona em WHERE',
+        'Não é padrão SQL',
+      ],
+      correctIndex: 1,
+      explanation: 'Mais que isso, erro em runtime.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Por que `NOT IN` pode quebrar com NULLs?',
+      options: [
+        'NOT IN não é padrão',
+        'NULL faz comparações virarem UNKNOWN; resultado: 0 linhas',
+        'Só funciona no MySQL',
+        'NOT IN é mais lento',
+      ],
+      correctIndex: 1,
+      explanation: 'Use NOT EXISTS ou filtre NULLs.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Em `EXISTS`, o SELECT interno é ignorado.',
+      correct: true,
+      explanation: 'Só verifica existência.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Users que nunca fizeram order, NULL-safe.',
+      template: 'SELECT u.id FROM users u WHERE NOT ___ (SELECT 1 FROM orders o WHERE o.user_id = u.id);',
+      answer: 'EXISTS',
+      caseSensitive: false,
+      explanation: 'NOT EXISTS é seguro com NULLs.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Subquery correlacionada é avaliada...',
+      options: [
+        'Uma vez',
+        'Uma por linha externa',
+        'Só em EXPLAIN',
+        'Nunca, falha',
+      ],
+      correctIndex: 1,
+      explanation: 'Por isso reescreve-se como JOIN.',
+    },
+  ]}
+/>
+
+---
+
+## Exercício prático
+
+<Exercise
+  id="sql-subqueries-exercise"
+  title="Anti-join em JS"
+  description="Implemente `antiJoin(left, right, leftKey, rightKey)`."
+  language="javascript"
+  starterCode={`function antiJoin(left, right, leftKey, rightKey) {
+  return [];
+}
+
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'},{id:3,name:'Carla'}];
+const orders = [{user_id:1},{user_id:1},{user_id:3}];
+console.log(antiJoin(users, orders, 'id', 'user_id'));`}
+  solution={`function antiJoin(left, right, leftKey, rightKey) {
+  const rightKeys = new Set(right.map(r => r[rightKey]));
+  return left.filter(l => !rightKeys.has(l[leftKey]));
+}
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'},{id:3,name:'Carla'}];
+const orders = [{user_id:1},{user_id:1},{user_id:3}];
+console.log(antiJoin(users, orders, 'id', 'user_id'));`}
+  hints={[
+    'Set dá pertencimento O(1).',
+    'filter mantém os que NÃO estão no set.',
+  ]}
+  tests={[
+    {
+      description: 'users sem orders',
+      assert: 'antiJoin([{id:1},{id:2}],[{uid:1}],"id","uid").length === 1',
+    },
+    {
+      description: 'todos têm orders → vazio',
+      assert: 'antiJoin([{id:1}],[{uid:1}],"id","uid").length === 0',
+    },
+    {
+      description: 'right vazio → todos passam',
+      assert: 'antiJoin([{id:1},{id:2}],[],"id","uid").length === 2',
+    },
+  ]}
+/>
+
+---
+
+Próxima lição: **CTEs (WITH)**.

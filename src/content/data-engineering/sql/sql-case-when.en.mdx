@@ -1,0 +1,264 @@
+## CASE WHEN and conditional logic
+
+`CASE WHEN` is SQL's if/else. It lets you generate condition-dependent
+columns, categorize data, handle NULLs elegantly and move logic from app
+to warehouse.
+
+### Two syntaxes
+
+**1. Searched CASE (most used):**
+
+```sql
+SELECT
+  user_id,
+  amount,
+  CASE
+    WHEN amount < 10 THEN 'small'
+    WHEN amount < 100 THEN 'medium'
+    WHEN amount < 1000 THEN 'large'
+    ELSE 'huge'
+  END AS bucket
+FROM payments;
+```
+
+**2. Simple CASE (when comparing the same thing):**
+
+```sql
+SELECT
+  status,
+  CASE status
+    WHEN 'paid' THEN 1
+    WHEN 'pending' THEN 0
+    ELSE -1
+  END AS status_score
+FROM orders;
+```
+
+`ELSE` is optional but recommended: without it, no match → NULL. The #1
+source of "why am I getting unexpected nulls?".
+
+### Typical cases
+
+**Categorization:**
+
+```sql
+SELECT
+  CASE
+    WHEN age < 18 THEN 'minor'
+    WHEN age < 30 THEN 'young_adult'
+    WHEN age < 60 THEN 'adult'
+    ELSE 'senior'
+  END AS age_group,
+  COUNT(*) AS users
+FROM users
+GROUP BY 1;
+```
+
+**Manual pivots:**
+
+```sql
+SELECT
+  date_trunc('day', created_at) AS day,
+  SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS revenue_paid,
+  SUM(CASE WHEN status = 'refunded' THEN amount ELSE 0 END) AS revenue_refunded,
+  SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END) AS revenue_pending
+FROM payments
+GROUP BY 1;
+```
+
+Classic trick to "pivot" long → wide. Native syntax exists (`PIVOT` in
+Snowflake/SQL Server, `crosstab` in Postgres) — but `CASE` works on any
+engine.
+
+**Conditional counts:**
+
+```sql
+SELECT
+  user_id,
+  COUNT(*) AS total_orders,
+  COUNT(CASE WHEN status = 'paid' THEN 1 END) AS paid_orders,
+  COUNT(CASE WHEN amount > 100 THEN 1 END) AS high_value_orders
+FROM payments
+GROUP BY user_id;
+```
+
+`COUNT(CASE WHEN ... THEN 1 END)` counts only matching rows — NULLs
+(when condition is false) don't count. In modern Postgres,
+`COUNT(*) FILTER (WHERE ...)` is cleaner.
+
+### CASE as NULL handler
+
+```sql
+-- Replace NULL with default
+SELECT user_id,
+  CASE WHEN country IS NULL THEN 'unknown' ELSE country END AS country
+FROM users;
+
+-- Equivalent shortcut:
+SELECT user_id, COALESCE(country, 'unknown') AS country FROM users;
+```
+
+`COALESCE(a, b, c)` returns the first non-null. Prefer it for "if null
+then X"; use `CASE` for complex logic.
+
+### IIF, IF, NULLIF
+
+```sql
+-- IIF (SQL Server, BigQuery): binary if-else
+IIF(amount > 100, 'big', 'small')
+
+-- NULLIF: convert specific value to NULL
+NULLIF(division_total, 0)
+
+-- COALESCE: first non-null
+COALESCE(nickname, name, 'anon')
+```
+
+`NULLIF(x, y)` returns NULL if x = y, else x. Useful to sanitize:
+
+```sql
+SELECT amount / NULLIF(quantity, 0) AS unit_price FROM order_items;
+-- When quantity = 0, divisor is NULL → result NULL instead of error
+```
+
+### Advanced patterns
+
+**Tag first/last/only in partition:**
+
+```sql
+WITH ranked AS (
+  SELECT
+    *,
+    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) AS rn,
+    COUNT(*) OVER (PARTITION BY user_id) AS total
+  FROM purchases
+)
+SELECT
+  user_id,
+  amount,
+  CASE
+    WHEN total = 1 THEN 'only'
+    WHEN rn = 1 THEN 'first'
+    WHEN rn = total THEN 'last'
+    ELSE 'middle'
+  END AS purchase_position
+FROM ranked;
+```
+
+### Common mistakes
+
+- **Forgetting `ELSE`**: NULL when no match.
+- **Mixing types in THENs**: strict engines fail or coerce.
+- **`CASE` when `COALESCE` or `NULLIF` suffice** — less readable.
+- **5-level nested CASE WHEN**: factor out into CTE or function.
+
+### Keep learning
+
+- [Postgres — Conditional expressions](https://www.postgresql.org/docs/current/functions-conditional.html)
+- [Mode — CASE](https://mode.com/sql-tutorial/sql-case/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-case-when-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'What if CASE has no ELSE and nothing matches?',
+      options: [
+        'Runtime error',
+        'Returns NULL',
+        'Returns 0',
+        'Returns the first THEN',
+      ],
+      correctIndex: 1,
+      explanation: 'NULL is the default. Common source of unexpected NULLs.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'COALESCE(a, b) is equivalent to CASE WHEN a IS NOT NULL THEN a ELSE b END.',
+      correct: true,
+      explanation: 'Yes — COALESCE returns the first non-NULL argument.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'You want to avoid division by zero. Which function?',
+      options: ['COALESCE', 'NULLIF', 'IFF', 'NVL'],
+      correctIndex: 1,
+      explanation: 'NULLIF(x, 0) turns 0 into NULL, avoiding the division error.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Count only paid orders.',
+      template: 'COUNT(___ WHEN status = \\\'paid\\\' THEN 1 END)',
+      answer: 'CASE',
+      caseSensitive: false,
+      explanation: 'COUNT(CASE WHEN ... THEN 1 END) counts matching rows.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Manual pivot of status (paid, refunded, pending) using CASE:',
+      options: [
+        'Not possible without native PIVOT',
+        'SUM(CASE WHEN status = \'X\' THEN amount ELSE 0 END) per status',
+        'Only with UNION',
+        'Only on Snowflake',
+      ],
+      correctIndex: 1,
+      explanation: 'Classic trick that works on any engine.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="sql-case-when-exercise"
+  title="Amount bucketizer"
+  description="Implement `bucketize(amount)` returning 'small' if <10, 'medium' if <100, 'large' if <1000, 'huge' otherwise."
+  language="javascript"
+  starterCode={`function bucketize(amount) {
+  return '';
+}
+
+console.log(bucketize(5));
+console.log(bucketize(50));
+console.log(bucketize(500));
+console.log(bucketize(5000));`}
+  solution={`function bucketize(amount) {
+  if (amount < 10) return 'small';
+  if (amount < 100) return 'medium';
+  if (amount < 1000) return 'large';
+  return 'huge';
+}
+console.log(bucketize(5));
+console.log(bucketize(50));
+console.log(bucketize(500));
+console.log(bucketize(5000));`}
+  hints={[
+    'Cascade if/else in ascending order.',
+    'Last return is the ELSE.',
+  ]}
+  tests={[
+    { description: 'small', assert: 'bucketize(5) === "small"' },
+    { description: 'medium', assert: 'bucketize(50) === "medium"' },
+    { description: 'large', assert: 'bucketize(500) === "large"' },
+    { description: 'huge', assert: 'bucketize(5000) === "huge"' },
+    { description: 'edge: 10 → medium', assert: 'bucketize(10) === "medium"' },
+  ]}
+/>
+
+---
+
+Next: **indexes and performance**.

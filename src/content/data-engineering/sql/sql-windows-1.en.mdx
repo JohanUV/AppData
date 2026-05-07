@@ -1,0 +1,280 @@
+## Window functions I: ROW_NUMBER, RANK
+
+**Window functions** are the difference between writing "basic" SQL and
+"professional" SQL. They let you compute over a set of rows related to
+the current row without collapsing the result like `GROUP BY` does. This
+lesson covers ranking; the next covers LAG/LEAD/SUM OVER.
+
+### The problem they solve
+
+You want "top 3 best-selling products per category". Without window
+functions, you need ugly correlated subqueries. With ROW_NUMBER, 4 lines:
+
+```sql
+WITH ranked AS (
+  SELECT
+    category,
+    product_name,
+    units_sold,
+    ROW_NUMBER() OVER (PARTITION BY category ORDER BY units_sold DESC) AS rn
+  FROM product_sales
+)
+SELECT category, product_name, units_sold
+FROM ranked
+WHERE rn <= 3;
+```
+
+### Anatomy
+
+```sql
+FUNCTION() OVER (
+  PARTITION BY <col>     -- split into groups (optional)
+  ORDER BY <col>         -- order within group
+  -- ROWS BETWEEN ...    -- frame (next lesson)
+)
+```
+
+- **PARTITION BY**: splits rows into groups. The function applies
+  separately per group.
+- **ORDER BY**: order within group.
+
+Unlike `GROUP BY`, it does NOT collapse rows — original rows remain, with
+the computed column added.
+
+### ROW_NUMBER, RANK, DENSE_RANK
+
+All three assign a number to each row in a group, but handle ties
+differently:
+
+<AnnotatedCode
+  language="sql"
+  filename="ranking.sql"
+  annotations={[
+    {
+      match: 'ROW_NUMBER()',
+      title: 'No ties',
+      body: 'Assigns 1, 2, 3, 4... regardless of ties in ORDER BY. Tie-breaking is arbitrary.',
+    },
+    {
+      match: 'RANK()',
+      title: 'With gaps',
+      body: 'Ties get the same number, but gaps follow: 1, 2, 2, 4.',
+    },
+    {
+      match: 'DENSE_RANK()',
+      title: 'No gaps',
+      body: 'Ties get the same number, no skip: 1, 2, 2, 3.',
+    },
+  ]}
+>
+{`SELECT
+  user_id,
+  amount,
+  ROW_NUMBER() OVER (ORDER BY amount DESC) AS rn,
+  RANK() OVER (ORDER BY amount DESC) AS rk,
+  DENSE_RANK() OVER (ORDER BY amount DESC) AS drk
+FROM payments;`}
+</AnnotatedCode>
+
+```
+amount | rn | rk | drk
+100    | 1  | 1  | 1
+80     | 2  | 2  | 2
+80     | 3  | 2  | 2
+70     | 4  | 4  | 3
+```
+
+Which to use?
+
+- **ROW_NUMBER**: unique sequential id. "1st purchase", "5th impression".
+- **RANK**: classic sports ranking (1, 2, 2, 4).
+- **DENSE_RANK**: compact levels without gaps.
+
+### Top N per group: the star pattern
+
+```sql
+WITH ranked AS (
+  SELECT
+    category,
+    product_name,
+    units_sold,
+    ROW_NUMBER() OVER (PARTITION BY category ORDER BY units_sold DESC) AS rn
+  FROM product_sales
+)
+SELECT category, product_name, units_sold
+FROM ranked
+WHERE rn <= 3;
+```
+
+### NTILE: deciles, quartiles
+
+```sql
+SELECT
+  user_id,
+  total_spent,
+  NTILE(4) OVER (ORDER BY total_spent DESC) AS quartile
+FROM user_revenue;
+```
+
+Quartile 1 = top 25% spenders. Useful for segmentation.
+
+### vs GROUP BY
+
+```sql
+-- GROUP BY: collapses
+SELECT category, AVG(price) FROM products GROUP BY category;
+-- 3 rows
+
+-- Window: preserves rows + adds column
+SELECT
+  category,
+  product_name,
+  price,
+  AVG(price) OVER (PARTITION BY category) AS category_avg
+FROM products;
+-- N rows
+```
+
+### PARTITION BY without ORDER BY
+
+```sql
+SELECT
+  user_id,
+  amount,
+  COUNT(*) OVER (PARTITION BY user_id) AS user_orders_count,
+  SUM(amount) OVER (PARTITION BY user_id) AS user_total_spent
+FROM payments;
+```
+
+Without ORDER BY inside OVER, computation applies to all rows in the
+group: each row sees user total, not running.
+
+### Common mistakes
+
+- **`WHERE` filter on window** — can't do `WHERE ROW_NUMBER() OVER (...) <= 3`. Wrap in CTE.
+- **Forgetting PARTITION BY** and getting global ranking.
+- **`ROW_NUMBER` expecting tie consistency** — use RANK/DENSE_RANK.
+- **`ORDER BY` in OVER misread** — it's the internal computation order,
+  not the result order.
+
+### Keep learning
+
+- [Postgres docs — Window Functions](https://www.postgresql.org/docs/current/tutorial-window.html)
+- [Mode — Window Functions](https://mode.com/sql-tutorial/sql-window-functions/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-windows-1-quiz"
+  xpReward={80}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Key difference between window function and GROUP BY:',
+      options: [
+        'Just syntax',
+        'GROUP BY collapses rows; window function preserves all rows',
+        'Window functions are slower',
+        'GROUP BY is deprecated',
+      ],
+      correctIndex: 1,
+      explanation: 'Window adds a computed column without reducing row count.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'On ties, RANK gives 1,2,2,4. What does DENSE_RANK give?',
+      options: ['1,2,2,4', '1,2,2,3', '1,2,3,4', '1,1,2,3'],
+      correctIndex: 1,
+      explanation: 'DENSE_RANK leaves no gaps.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'You can use `WHERE ROW_NUMBER() OVER (...) <= 3` directly in a query.',
+      correct: false,
+      explanation: 'Window functions cannot be referenced in WHERE; wrap in CTE/subquery.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Top 1 sale per user.',
+      template: 'ROW_NUMBER() OVER (___ user_id ORDER BY amount DESC) AS rn',
+      answer: 'PARTITION BY',
+      caseSensitive: false,
+      explanation: 'PARTITION BY user_id splits into groups by user.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'You want "top 25% spenders". Which function?',
+      options: ['ROW_NUMBER', 'RANK', 'NTILE(4) and filter quartile=1', 'COUNT'],
+      correctIndex: 2,
+      explanation: 'NTILE divides into n same-sized buckets; filter the 1st.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="sql-windows-1-exercise"
+  title="ROW_NUMBER in JS"
+  description="Implement `rowNumber(rows, partitionKey, orderKey)` returning rows with `rn` property = row_number within each partition ordered by orderKey desc."
+  language="javascript"
+  starterCode={`function rowNumber(rows, partitionKey, orderKey) {
+  return rows;
+}
+
+const data = [
+  {cat:'A',v:30},{cat:'A',v:10},{cat:'A',v:20},
+  {cat:'B',v:5},{cat:'B',v:15},
+];
+console.log(rowNumber(data, 'cat', 'v'));`}
+  solution={`function rowNumber(rows, partitionKey, orderKey) {
+  const groups = {};
+  for (const r of rows) {
+    const k = r[partitionKey];
+    (groups[k] ||= []).push(r);
+  }
+  const out = [];
+  for (const arr of Object.values(groups)) {
+    arr.sort((a, b) => b[orderKey] - a[orderKey]);
+    arr.forEach((r, i) => out.push({ ...r, rn: i + 1 }));
+  }
+  return out;
+}
+const data = [
+  {cat:'A',v:30},{cat:'A',v:10},{cat:'A',v:20},
+  {cat:'B',v:5},{cat:'B',v:15},
+];
+console.log(rowNumber(data, 'cat', 'v'));`}
+  hints={[
+    'Group first, sort each group, then assign rn.',
+    'Sort descending: (a,b) => b.v - a.v.',
+  ]}
+  tests={[
+    {
+      description: 'assigns rn correctly',
+      assert: 'rowNumber([{c:"a",v:1},{c:"a",v:2}],"c","v").find(r=>r.v===2).rn === 1',
+    },
+    {
+      description: 'resets rn per partition',
+      assert: 'rowNumber([{c:"a",v:5},{c:"b",v:1}],"c","v").every(r=>r.rn===1)',
+    },
+    {
+      description: 'preserves row count',
+      assert: 'rowNumber([{c:"a",v:1},{c:"a",v:2},{c:"b",v:3}],"c","v").length === 3',
+    },
+  ]}
+/>
+
+---
+
+Next: **window functions II** — LAG, LEAD and rolling windows.

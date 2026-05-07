@@ -1,0 +1,299 @@
+## Window functions II: LAG, LEAD, SUM OVER
+
+Las window functions de la lección anterior te ranking. Las de hoy te
+permiten **mirar a otras filas** desde la actual: la fila de antes
+(`LAG`), la siguiente (`LEAD`), o todas las anteriores acumuladas (`SUM
+OVER`). Son indispensables para análisis de series de tiempo.
+
+### LAG y LEAD: filas vecinas
+
+<AnnotatedCode
+  language="sql"
+  filename="lag-lead.sql"
+  annotations={[
+    {
+      match: 'LAG(amount, 1)',
+      title: 'Valor de la fila anterior',
+      body: 'LAG(col, n) devuelve el valor de col n filas atrás dentro de la partición ordenada. n=1 es la fila inmediatamente anterior.',
+    },
+    {
+      match: 'LEAD(amount, 1)',
+      title: 'Valor de la fila siguiente',
+      body: 'Análogo a LAG pero hacia adelante. LEAD(col) por default mira 1 fila hacia adelante.',
+    },
+    {
+      match: ', 0)',
+      title: 'Valor por defecto',
+      body: 'Tercer argumento (opcional): qué devolver si no hay fila previa/siguiente. Por default es NULL; aquí 0.',
+    },
+  ]}
+>
+{`SELECT
+  user_id,
+  created_at,
+  amount,
+  LAG(amount, 1, 0) OVER (PARTITION BY user_id ORDER BY created_at) AS prev_amount,
+  LEAD(amount, 1) OVER (PARTITION BY user_id ORDER BY created_at) AS next_amount,
+  amount - LAG(amount, 1, 0) OVER (PARTITION BY user_id ORDER BY created_at) AS delta
+FROM payments;`}
+</AnnotatedCode>
+
+Caso típico: detectar gaps entre eventos.
+
+```sql
+-- Tiempo desde la orden anterior, por usuario
+SELECT
+  user_id,
+  created_at,
+  EXTRACT(EPOCH FROM (
+    created_at - LAG(created_at) OVER (PARTITION BY user_id ORDER BY created_at)
+  )) / 86400 AS days_since_last_order
+FROM orders;
+```
+
+### Sumas acumuladas: SUM OVER con ORDER BY
+
+```sql
+SELECT
+  user_id,
+  created_at,
+  amount,
+  SUM(amount) OVER (PARTITION BY user_id ORDER BY created_at) AS running_total
+FROM payments;
+```
+
+Cada fila ve la suma desde el inicio de la partición hasta ella misma.
+Nota: agregar `ORDER BY` dentro del OVER cambia el comportamiento de
+`SUM` — sin ORDER BY suma todo el grupo, con ORDER BY suma acumulada.
+
+### Frame clauses: control fino del rango
+
+Las window functions trabajan sobre un **frame**: un subconjunto de filas
+del grupo. Por defecto, con `ORDER BY`, el frame es "desde el inicio de
+la partición hasta la fila actual". Puedes cambiarlo:
+
+```sql
+SUM(amount) OVER (
+  PARTITION BY user_id
+  ORDER BY created_at
+  ROWS BETWEEN 6 PRECEDING AND CURRENT ROW   -- últimos 7 días (filas)
+)
+```
+
+Tipos de frame:
+
+- `ROWS BETWEEN N PRECEDING AND M FOLLOWING` — número físico de filas.
+- `RANGE BETWEEN ...` — basado en valores ORDER BY (útil con fechas).
+- `UNBOUNDED PRECEDING` — desde el principio.
+- `UNBOUNDED FOLLOWING` — hasta el final.
+- `CURRENT ROW` — la fila actual.
+
+### Promedio móvil de 7 días
+
+```sql
+SELECT
+  date,
+  daily_revenue,
+  AVG(daily_revenue) OVER (
+    ORDER BY date
+    ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+  ) AS rolling_avg_7d
+FROM daily_kpis;
+```
+
+`6 PRECEDING + CURRENT ROW` = ventana de 7 filas. Para fechas exactas
+(que toleren días faltantes) usa `RANGE`:
+
+```sql
+RANGE BETWEEN INTERVAL '6 days' PRECEDING AND CURRENT ROW
+```
+
+### FIRST_VALUE y LAST_VALUE
+
+Devuelven la primera y última fila del frame:
+
+```sql
+SELECT
+  user_id,
+  created_at,
+  amount,
+  FIRST_VALUE(amount) OVER (PARTITION BY user_id ORDER BY created_at) AS first_purchase,
+  LAST_VALUE(amount) OVER (
+    PARTITION BY user_id
+    ORDER BY created_at
+    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+  ) AS last_purchase
+FROM payments;
+```
+
+<Callout type="warning" title="LAST_VALUE traicionero">
+  Por default el frame con ORDER BY es "hasta la fila actual", así que
+  LAST_VALUE = la fila actual. Para que de verdad devuelva la última de la
+  partición, expande el frame con ROWS BETWEEN UNBOUNDED PRECEDING AND
+  UNBOUNDED FOLLOWING.
+</Callout>
+
+### Caso: identificar primera compra de cada usuario
+
+```sql
+WITH first_purchases AS (
+  SELECT
+    user_id,
+    amount,
+    created_at,
+    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) AS rn
+  FROM payments
+)
+SELECT user_id, amount, created_at
+FROM first_purchases
+WHERE rn = 1;
+```
+
+### Caso: retención día sobre día
+
+```sql
+WITH daily AS (
+  SELECT
+    date_trunc('day', event_at) AS day,
+    COUNT(DISTINCT user_id) AS dau
+  FROM events GROUP BY 1
+)
+SELECT
+  day,
+  dau,
+  LAG(dau) OVER (ORDER BY day) AS dau_yesterday,
+  100.0 * (dau - LAG(dau) OVER (ORDER BY day)) / LAG(dau) OVER (ORDER BY day) AS pct_change
+FROM daily
+ORDER BY day;
+```
+
+### Errores comunes
+
+- **LAST_VALUE sin frame extendido**. Devuelve la fila actual, no la
+  última de la partición.
+- **Olvidar `ORDER BY` en OVER cuando lo necesitas**. Sin orden, `LAG`,
+  `LEAD`, sumas acumuladas no tienen sentido determinista.
+- **Confundir ROWS y RANGE**. ROWS cuenta filas físicas; RANGE cuenta
+  valores. Con datos espaciados irregularmente, importa.
+- **Pensar que LAG con NULL "salta"**. No: LAG ve el valor de la fila
+  exactamente n posiciones atrás, sea NULL o no. Para skip-NULLs, hay que
+  reescribir.
+
+### Para seguir aprendiendo
+
+- [Mode — advanced window functions](https://mode.com/sql-tutorial/sql-window-functions/)
+- [Postgres — Window Functions](https://www.postgresql.org/docs/current/functions-window.html)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-windows-2-quiz"
+  xpReward={80}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Qué hace LAG(amount, 1) OVER (ORDER BY created_at)?',
+      options: [
+        'Suma 1 al amount',
+        'Devuelve el amount de la fila anterior según created_at',
+        'Cuenta filas anteriores',
+        'Lo mismo que ROW_NUMBER',
+      ],
+      correctIndex: 1,
+      explanation: 'LAG(col, n) trae el valor de col n filas atrás en la partición ordenada.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Con ORDER BY dentro del OVER, SUM(amount) OVER (...) acumula desde el inicio de la partición hasta la fila actual.',
+      correct: true,
+      explanation: 'El frame por default con ORDER BY es UNBOUNDED PRECEDING ... CURRENT ROW.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Quieres una media móvil de 7 días sobre filas. ¿Qué frame?',
+      options: [
+        'ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW',
+        'ROWS BETWEEN 6 PRECEDING AND CURRENT ROW',
+        'ROWS BETWEEN 7 PRECEDING AND 7 FOLLOWING',
+        'No se puede',
+      ],
+      correctIndex: 1,
+      explanation: '6 PRECEDING + CURRENT ROW = ventana de 7 filas.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Devuelve el siguiente valor de amount.',
+      template: '___(amount, 1) OVER (ORDER BY created_at)',
+      answer: 'LEAD',
+      caseSensitive: false,
+      explanation: 'LEAD ve hacia adelante en la partición.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: '¿Por qué LAST_VALUE puede no devolver lo que esperas?',
+      options: [
+        'No es estándar SQL',
+        'Por default su frame es ".. CURRENT ROW", así que devuelve la fila actual; necesitas extender el frame',
+        'Sólo funciona con fechas',
+        'Devuelve el primer valor',
+      ],
+      correctIndex: 1,
+      explanation: 'Frame por default con ORDER BY termina en CURRENT ROW. Hay que poner UNBOUNDED FOLLOWING.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="sql-windows-2-exercise"
+  title="Suma acumulada"
+  description="Implementa `runningTotal(rows, key)` que toma un array de números (o objetos con `key`) y devuelve un array de la suma acumulada hasta cada posición."
+  language="javascript"
+  starterCode={`function runningTotal(rows, key) {
+  return rows;
+}
+
+console.log(runningTotal([{v:10},{v:20},{v:5}], 'v'));
+// [{v:10, total:10}, {v:20, total:30}, {v:5, total:35}]`}
+  solution={`function runningTotal(rows, key) {
+  let acc = 0;
+  return rows.map(r => {
+    acc += r[key];
+    return { ...r, total: acc };
+  });
+}
+console.log(runningTotal([{v:10},{v:20},{v:5}], 'v'));`}
+  hints={[
+    'Mantén un acumulador externo a map.',
+    'Cada fila guarda el total acumulado hasta ahí.',
+  ]}
+  tests={[
+    {
+      description: 'suma acumulada',
+      assert: 'runningTotal([{v:10},{v:20}],"v").map(r=>r.total).join(",") === "10,30"',
+    },
+    {
+      description: 'array vacío',
+      assert: 'runningTotal([],"v").length === 0',
+    },
+    {
+      description: 'preserva otros campos',
+      assert: 'runningTotal([{name:"a",v:5}],"v")[0].name === "a"',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **CASE WHEN y lógica condicional**.

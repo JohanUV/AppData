@@ -1,0 +1,348 @@
+## Query optimization
+
+A slow query is never magic. There's a concrete bottleneck: full scan,
+missing index, JOIN exploding rows, or planner misestimating
+cardinalities. This lesson is the diagnostic playbook.
+
+### Diagnostic process
+
+<Diagram type="mermaid">
+{`flowchart TD
+  A[Slow query] --> B[Reproduce<br/>with EXPLAIN ANALYZE]
+  B --> C{Where is<br/>the time?}
+  C -->|Seq Scan| D[Missing index<br/>or unselective filter]
+  C -->|Sort| E[Expensive ORDER BY<br/>+ no index]
+  C -->|Huge Hash Join| F[Intermediate table<br/>inflates — review JOINs]
+  C -->|Nested Loop with high N| G[Correlated subquery<br/>or repeated lookup]
+  D --> H[Create proper index]
+  E --> H
+  F --> I[Filter early,<br/>JOIN small first]
+  G --> J[Rewrite as JOIN]`}
+</Diagram>
+
+### Read EXPLAIN like a detective
+
+Start with the **most expensive operation**: highest time or cost.
+Inside-out.
+
+```
+QUERY PLAN
+Sort  (cost=2000.00..2050.00 rows=20000 width=64)
+  Sort Key: created_at DESC
+  ->  Hash Join  (cost=500.00..1500.00 rows=20000 width=64)
+        Hash Cond: (o.user_id = u.id)
+        ->  Seq Scan on orders o  (cost=0.00..800.00 rows=80000)
+              Filter: (status = 'paid')
+        ->  Hash  (cost=200.00..200.00 rows=10000)
+              ->  Seq Scan on users u  (cost=0.00..200.00 rows=10000)
+                    Filter: (country = 'CO')
+```
+
+Diagnosis: Seq Scan on `orders` with `status='paid'` filter. If selective,
+**missing index** on status (or compound with user_id).
+
+### Strategy 1: filter early
+
+Apply WHERE as soon as possible. Filter **before** joining, not after:
+
+```sql
+-- ❌ Slow: join everything, filter at the end
+SELECT *
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id
+WHERE u.country = 'CO' AND o.status = 'paid';
+
+-- ✓ Better: pre-filter each side
+WITH co_users AS (
+  SELECT * FROM users WHERE country = 'CO'
+),
+paid_orders AS (
+  SELECT * FROM orders WHERE status = 'paid'
+)
+SELECT *
+FROM co_users u
+LEFT JOIN paid_orders o ON u.id = o.user_id;
+```
+
+### Strategy 2: indexes on right columns
+
+`WHERE`, `JOIN ON`, `ORDER BY` with LIMIT are candidates. Three rules:
+
+1. Filtered often (high cardinality).
+2. Selective (small fraction matches).
+3. Frequently queried.
+
+For `WHERE col1 = X AND col2 > Y ORDER BY col3`, consider compound index
+`(col1, col2, col3)`.
+
+### Strategy 3: avoid SELECT *
+
+`SELECT *` reads every column. Heavy TEXT/BLOB you didn't need? You drag
+it. With covering index, **index-only scan** doesn't even touch the
+table.
+
+```sql
+CREATE INDEX idx_users_email_id ON users(email, id);
+SELECT id FROM users WHERE email = 'x';
+```
+
+### Strategy 4: LIMIT changes the plan
+
+```sql
+SELECT * FROM events ORDER BY created_at DESC;          -- sorts everything
+SELECT * FROM events ORDER BY created_at DESC LIMIT 100; -- index scan, stop at 100
+```
+
+The optimizer is more aggressive with small LIMIT.
+
+### Strategy 5: expensive aggregations
+
+`COUNT(DISTINCT col)` on huge tables is costly. Alternatives:
+
+- `APPROX_COUNT_DISTINCT(col)` (BigQuery, Redshift): under 1% error, much
+  faster.
+- Pre-aggregate to a daily table.
+
+### Strategy 6: partitioning (warehouses)
+
+In BigQuery/Snowflake/Redshift no B-trees. Optimization via:
+
+- **Partition** by date or typical filter column.
+- **Cluster** by frequent WHERE columns.
+- **Materialized aggregations**.
+
+`WHERE date = '2026-01-15'` on a date-partitioned table only scans that
+partition — orders of magnitude faster.
+
+### Strategy 7: avoid accidental cartesians
+
+```sql
+SELECT *
+FROM orders, order_items;   -- implicit cross join!
+```
+
+N × M rows. Always explicit `JOIN ... ON`.
+
+### Strategy 8: refactor correlated subqueries
+
+```sql
+-- ❌ N evaluations
+SELECT u.name,
+  (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) AS n
+FROM users u;
+
+-- ✓ Single pass
+SELECT u.name, COALESCE(o.n, 0) AS n
+FROM users u
+LEFT JOIN (
+  SELECT user_id, COUNT(*) AS n FROM orders GROUP BY user_id
+) o ON u.id = o.user_id;
+```
+
+### Strategy 9: keep stats fresh
+
+Postgres uses statistics (`ANALYZE`) for planning. If tables grow without
+analyze, plans degrade. Schedule `VACUUM ANALYZE`.
+
+### Common mistakes
+
+- **Optimizing before measuring**.
+- **Indexing "just in case"** without evidence.
+- **Adding `LIMIT 100` to test** and forgetting it.
+- **Comparing perf in dev** (small data) and assuming prod behaves the
+  same.
+- **Forgetting cache effects**: first run slow (disk), next fast (cache).
+
+### Keep learning
+
+- [Use The Index, Luke!](https://use-the-index-luke.com/)
+- [Postgres Performance Tips](https://www.postgresql.org/docs/current/performance-tips.html)
+- [BigQuery — Optimizing query performance](https://cloud.google.com/bigquery/docs/best-practices-performance-overview)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-query-opt-quiz"
+  xpReward={80}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'First step to optimize a slow query:',
+      options: [
+        'Add more indexes',
+        'Reproduce with EXPLAIN ANALYZE to see the real plan',
+        'Rewrite everything as CTE',
+        'Change engine',
+      ],
+      correctIndex: 1,
+      explanation: 'Without EXPLAIN you optimize blindly.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'In columnar warehouses like BigQuery, B-tree indexes aren\'t the main tool.',
+      correct: true,
+      explanation: 'Performance comes from partitioning + clustering.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'A correlated subquery with N outer rows is evaluated...',
+      options: [
+        'Once',
+        'N times (per outer row)',
+        'Only in EXPLAIN',
+        'Never, fails at runtime',
+      ],
+      correctIndex: 1,
+      explanation: 'Why almost always rewritten as aggregated JOIN.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Replace slow COUNT(DISTINCT col) in BigQuery with the approximate.',
+      template: '___(col) AS uniques',
+      answer: 'APPROX_COUNT_DISTINCT',
+      caseSensitive: false,
+      explanation: 'APPROX_COUNT_DISTINCT uses HyperLogLog: ~1% error, much faster.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q5',
+      prompt: 'Order the optimization steps.',
+      steps: [
+        'Reproduce and measure baseline',
+        'EXPLAIN ANALYZE to find bottleneck',
+        'Try one change (index/refactor)',
+        'Measure again',
+        'Decide whether to keep it',
+      ],
+      explanation: 'Measure → diagnose → change → measure → decide.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="sql-query-opt-exercise"
+  title="Mock query plan diagnosis"
+  description="Given a plan-like object, return an array of recommendation strings: 'Seq Scan' on table with > 100k rows → 'missing index'; 'Sort' as topOp → 'consider indexed ORDER BY'."
+  language="javascript"
+  starterCode={`function diagnose(plan) {
+  return [];
+}
+
+console.log(diagnose({
+  topOp: 'Sort',
+  scans: [
+    { type: 'Seq', table: 'orders', rows: 1000000 },
+    { type: 'Index', table: 'users', rows: 5000 },
+  ],
+}));`}
+  solution={`function diagnose(plan) {
+  const out = [];
+  if (plan.topOp === 'Sort') out.push('consider indexed ORDER BY');
+  for (const s of plan.scans || []) {
+    if (s.type === 'Seq' && s.rows >= 100000) {
+      out.push(\`missing index on \${s.table}\`);
+    }
+  }
+  return out;
+}
+console.log(diagnose({
+  topOp: 'Sort',
+  scans: [
+    { type: 'Seq', table: 'orders', rows: 1000000 },
+    { type: 'Index', table: 'users', rows: 5000 },
+  ],
+}));`}
+  hints={[
+    'Check plan.topOp for Sort signal.',
+    'Walk plan.scans looking for big Seq Scans.',
+  ]}
+  tests={[
+    {
+      description: 'Big Seq Scan detected',
+      assert: 'diagnose({topOp:"Hash",scans:[{type:"Seq",table:"orders",rows:200000}]}).join(",").includes("orders")',
+    },
+    {
+      description: 'Sort detected',
+      assert: 'diagnose({topOp:"Sort",scans:[]}).join(",").includes("ORDER BY")',
+    },
+    {
+      description: 'healthy plan: no recs',
+      assert: 'diagnose({topOp:"Hash",scans:[{type:"Index",table:"users",rows:1000000}]}).length === 0',
+    },
+  ]}
+/>
+
+---
+
+## Module mini-project
+
+<Project
+  id="sql-module-project"
+  title="SQL KPI dashboard"
+  description="Apply everything by building a set of queries computing real business metrics on a public dataset."
+  xpReward={400}
+  steps={[
+    {
+      id: 's1',
+      title: 'Load Chinook (music) or Sakila (movie rentals)',
+      description: 'Both are free educational datasets. Use SQLite locally or Postgres in docker.',
+      successCriteria: 'Schema loaded, can run SELECT count(*) on every table.',
+      resources: [
+        { label: 'Chinook DB', href: 'https://github.com/lerocha/chinook-database' },
+        { label: 'Sakila DB', href: 'https://dev.mysql.com/doc/sakila/en/' },
+      ],
+    },
+    {
+      id: 's2',
+      title: 'KPI 1 — Top 10 customers by revenue (LEFT JOIN + GROUP BY)',
+      description: 'Join customer + invoice + invoice_line. Watch out for row explosion.',
+      successCriteria: 'List of 10 customers ordered by total_revenue DESC.',
+    },
+    {
+      id: 's3',
+      title: 'KPI 2 — Monthly revenue with CTE',
+      description: 'date_trunc by month. CTE for invoices.',
+      successCriteria: 'One row per month: revenue, invoice count, avg ticket.',
+    },
+    {
+      id: 's4',
+      title: 'KPI 3 — Top 3 genres per country (window function)',
+      description: 'ROW_NUMBER() OVER (PARTITION BY country ORDER BY units DESC). Filter rn <= 3.',
+      successCriteria: 'For each country: 3 genres with their sales.',
+    },
+    {
+      id: 's5',
+      title: 'KPI 4 — "first vs repeat" customer (CASE WHEN + window)',
+      description: 'ROW_NUMBER per customer ordered by date; classify first vs subsequent.',
+      successCriteria: 'Each invoice tagged first/repeat. Aggregated count.',
+    },
+    {
+      id: 's6',
+      title: 'KPI 5 — 30-day rolling average (window with frame)',
+      description: 'AVG over daily revenue with ROWS BETWEEN 29 PRECEDING AND CURRENT ROW.',
+      successCriteria: 'Daily series with smoothed avg.',
+    },
+    {
+      id: 's7',
+      title: 'Optimize: EXPLAIN your slowest KPI',
+      description: 'Find a Seq Scan, add an index, compare before/after.',
+      successCriteria: 'Have EXPLAIN before (Seq Scan) and after (Index Scan); query is faster.',
+    },
+  ]}
+/>
+
+---
+
+Congrats, Module 1 complete! Just unlocked **"SQL Ninja"**. Next:
+**Python for Data Engineering**.

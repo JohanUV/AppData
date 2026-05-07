@@ -1,0 +1,283 @@
+## Aggregations and GROUP BY
+
+Aggregations are why SQL is so powerful for analytics: they turn millions
+of raw rows into summary metrics. Instead of looking at every transaction,
+you look at "total sales per day per country". `GROUP BY` is the clause
+that makes that possible.
+
+### Basic aggregation functions
+
+```sql
+SELECT
+  COUNT(*) AS rows_count,
+  COUNT(DISTINCT user_id) AS unique_users,
+  SUM(amount) AS total_revenue,
+  AVG(amount) AS avg_ticket,
+  MIN(amount) AS smallest_sale,
+  MAX(amount) AS biggest_sale
+FROM payments
+WHERE status = 'paid';
+```
+
+Without `GROUP BY`, all these collapse the whole table to one row.
+
+`COUNT(*)` counts rows; `COUNT(col)` counts rows where col is not NULL;
+`COUNT(DISTINCT col)` counts unique non-null values. Confuse them and
+your report breaks.
+
+### GROUP BY: group before aggregating
+
+```sql
+SELECT
+  country,
+  COUNT(*) AS orders,
+  SUM(amount) AS revenue
+FROM payments
+GROUP BY country;
+```
+
+If you add columns to SELECT, they must also be in GROUP BY (or be
+aggregations):
+
+```sql
+-- FAILS in standard SQL:
+SELECT country, city, COUNT(*) FROM payments GROUP BY country;
+
+-- OK:
+SELECT country, city, COUNT(*) FROM payments GROUP BY country, city;
+```
+
+### Logical order revisited
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[FROM] --> B[WHERE] --> C[GROUP BY] --> D[HAVING] --> E[SELECT] --> F[ORDER BY] --> G[LIMIT]`}
+</Diagram>
+
+`WHERE` filters **before** grouping; `HAVING` filters **after**.
+
+```sql
+-- Countries with more than 100 paid orders?
+SELECT country, COUNT(*) AS n
+FROM payments
+WHERE status = 'paid'
+GROUP BY country
+HAVING COUNT(*) > 100;
+```
+
+### Multiple aggregation levels
+
+```sql
+SELECT
+  date_trunc('month', created_at) AS month,
+  country,
+  COUNT(*) AS orders,
+  SUM(amount) AS revenue,
+  AVG(amount) AS avg_ticket
+FROM payments
+WHERE status = 'paid'
+GROUP BY 1, 2
+ORDER BY 1 DESC, revenue DESC;
+```
+
+`date_trunc` (Postgres) truncates a timestamp to period start —
+`'month'`, `'day'`, `'hour'`. BigQuery: `DATE_TRUNC(created_at, MONTH)`.
+
+### Conditional aggregation
+
+`SUM` and `COUNT` with `CASE WHEN` give you joint metrics:
+
+<AnnotatedCode
+  language="sql"
+  filename="conditional-agg.sql"
+  annotations={[
+    {
+      match: "SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END)",
+      title: 'Conditional SUM',
+      body: 'Sums only when the condition holds. Equivalent to SUM(amount) FILTER (WHERE status = "paid") in modern Postgres.',
+    },
+    {
+      match: 'COUNT(*) FILTER',
+      title: 'FILTER syntax (Postgres)',
+      body: 'Cleaner than CASE WHEN. Standard SQL but not implemented in MySQL.',
+    },
+    {
+      match: '1.0 *',
+      title: 'Cast to decimal',
+      body: 'Without 1.0, COUNT/COUNT does integer division (always 0 or 1). Multiply by 1.0 to force decimal.',
+    },
+  ]}
+>
+{`SELECT
+  date_trunc('day', created_at) AS day,
+  COUNT(*) AS attempts,
+  COUNT(*) FILTER (WHERE status = 'paid') AS successes,
+  SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS revenue,
+  1.0 * COUNT(*) FILTER (WHERE status = 'paid') / COUNT(*) AS success_rate
+FROM payments
+WHERE created_at >= current_date - 30
+GROUP BY 1
+ORDER BY 1;`}
+</AnnotatedCode>
+
+### Common analytics metrics
+
+```sql
+-- DAU
+SELECT date_trunc('day', event_at) AS day,
+       COUNT(DISTINCT user_id) AS dau
+FROM events GROUP BY 1;
+
+-- Funnel
+SELECT step, COUNT(DISTINCT user_id) AS users
+FROM funnel_events GROUP BY step ORDER BY step;
+
+-- AOV
+SELECT AVG(amount) AS aov FROM orders WHERE status = 'completed';
+```
+
+### Common mistakes
+
+- **Forgetting columns in GROUP BY** — standard SQL error.
+- **`COUNT(col)` when you wanted `COUNT(*)`**: NULLs reduce the count.
+- **Integer division** without cast.
+- **Filtering aggregations in `WHERE`** — use `HAVING`.
+- **`AVG` over data with outliers**: a $100k sale skews. Consider median.
+- **`COUNT(DISTINCT)` on huge tables**: expensive. For approximate, use
+  `APPROX_COUNT_DISTINCT` (HyperLogLog).
+
+### Keep learning
+
+- [Mode SQL — aggregate functions](https://mode.com/sql-tutorial/sql-aggregate-functions/)
+- [Postgres aggregate functions](https://www.postgresql.org/docs/current/functions-aggregate.html)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-aggregations-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Difference between WHERE and HAVING?',
+      options: [
+        'They are synonyms',
+        'WHERE filters rows before grouping; HAVING filters groups after aggregating',
+        'HAVING is for JOINs; WHERE not',
+        'WHERE does not support AND',
+      ],
+      correctIndex: 1,
+      explanation: 'WHERE → row-by-row before GROUP BY; HAVING → on resulting groups.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'What does `COUNT(col)` count?',
+      options: [
+        'Total rows',
+        'Rows where col is not NULL',
+        'Unique values of col',
+        'Bytes of col',
+      ],
+      correctIndex: 1,
+      explanation: 'COUNT(col) ignores NULL. To count all rows: COUNT(*).',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: '`COUNT(DISTINCT col)` counts distinct non-null values.',
+      correct: true,
+      explanation: 'Deduplicates and excludes NULL.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Filter groups with more than 100 orders.',
+      template: 'SELECT country, COUNT(*) FROM payments GROUP BY country ___ COUNT(*) > 100;',
+      answer: 'HAVING',
+      caseSensitive: false,
+      explanation: 'HAVING filters after GROUP BY.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'You want "success rate per day". Why might `COUNT(success)/COUNT(*)` give 0?',
+      options: [
+        'COUNT always gives 0',
+        'Integer division: a result <1 rounds to 0',
+        'GROUP BY does not support division',
+        'Engine bug',
+      ],
+      correctIndex: 1,
+      explanation: 'In engines with integer division, multiply by 1.0 or cast to decimal.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="sql-aggregations-exercise"
+  title="GROUP BY in JS"
+  description="Implement `groupBy(rows, key, aggregator)` that groups rows by `key` and applies `aggregator` (function) to each group. Returns array of { key, value }."
+  language="javascript"
+  starterCode={`function groupBy(rows, key, aggregator) {
+  return [];
+}
+
+const data = [
+  {country:'CO', amount:10},
+  {country:'CO', amount:20},
+  {country:'MX', amount:15},
+];
+const result = groupBy(data, 'country', (rows) => rows.reduce((s,r)=>s+r.amount,0));
+console.log(result);`}
+  solution={`function groupBy(rows, key, aggregator) {
+  const buckets = {};
+  for (const r of rows) {
+    const k = r[key];
+    if (!buckets[k]) buckets[k] = [];
+    buckets[k].push(r);
+  }
+  return Object.entries(buckets).map(([k, group]) => ({
+    [key]: k,
+    value: aggregator(group),
+  }));
+}
+const data = [
+  {country:'CO', amount:10},
+  {country:'CO', amount:20},
+  {country:'MX', amount:15},
+];
+const result = groupBy(data, 'country', (rows) => rows.reduce((s,r)=>s+r.amount,0));
+console.log(result);`}
+  hints={[
+    'Use object as dictionary: {country: [rows]}.',
+    'Then convert with Object.entries.map.',
+    'aggregator receives the group rows array.',
+  ]}
+  tests={[
+    {
+      description: 'sum per group',
+      assert: 'groupBy([{c:"a",v:1},{c:"a",v:2}],"c",rs=>rs.reduce((s,r)=>s+r.v,0))[0].value === 3',
+    },
+    {
+      description: 'count per group',
+      assert: 'groupBy([{c:"a"},{c:"a"},{c:"b"}],"c",rs=>rs.length).length === 2',
+    },
+    {
+      description: 'empty array → no groups',
+      assert: 'groupBy([],"c",rs=>rs.length).length === 0',
+    },
+  ]}
+/>
+
+---
+
+Next: **subqueries** — queries inside queries.

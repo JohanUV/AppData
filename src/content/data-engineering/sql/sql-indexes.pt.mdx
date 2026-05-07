@@ -1,0 +1,258 @@
+## Índices e performance
+
+Sua query funciona em dev com 1.000 linhas. Vai pra produção e morre com
+10 milhões. A razão quase sempre é a mesma: **falta de índice** ou índice
+mal usado.
+
+### O que é um índice
+
+Um índice é uma **estrutura auxiliar** que o motor mantém para acelerar
+lookups. Analogia clássica: o índice alfabético no fim de um livro.
+
+Sem índice: full table scan (10M comparações). Com índice em `email`:
+B-tree em ~log(10M) ≈ 24 comparações. Diferença entre 5 segundos e
+0.5ms.
+
+### Tipos comuns
+
+- **B-tree** (padrão). Equality, range, ORDER BY, LIKE 'foo%'.
+- **Hash**. Só equality, muito rápido.
+- **GIN / GiST** (Postgres). Full-text, JSON, arrays.
+- **Bitmap** (Oracle, columnar). Cardinalidade baixa.
+- **Columnstore** (BigQuery, Snowflake, Redshift). Não usa índices
+  tradicionais — particionamento + clustering.
+
+### Quando criar índice
+
+<Diagram type="mermaid">
+{`flowchart TD
+  A[Query lenta] --> B{Filtra/joina<br/>por uma coluna?}
+  B -->|Sim| C{Cardinalidade alta?}
+  C -->|Sim| D[Índice provavelmente útil]
+  C -->|Não| E[Bitmap ou pular]
+  B -->|Não| F[Outro problema:<br/>full scan necessário]`}
+</Diagram>
+
+**Bons candidatos:** FKs, colunas muito filtradas, ORDER BY com LIMIT,
+únicas.
+
+**Maus candidatos:** baixa cardinalidade, muito atualizadas, raramente
+filtradas.
+
+### Índices compostos
+
+```sql
+CREATE INDEX idx_users_country_created ON users(country, created_at);
+```
+
+**Ordem importa.** Usado por:
+
+```sql
+WHERE country = 'CO' AND created_at > '2026-01-01';
+WHERE country = 'CO';                                    -- prefixo
+WHERE country = 'CO' ORDER BY created_at DESC;
+```
+
+NÃO usado por:
+
+```sql
+WHERE created_at > '2026-01-01';   -- não começa por country
+```
+
+### EXPLAIN
+
+<AnnotatedCode
+  language="sql"
+  filename="explain.sql"
+  annotations={[
+    {
+      match: 'EXPLAIN ANALYZE',
+      title: 'Plano + execução real',
+      body: 'EXPLAIN só estima; ANALYZE roda e mede. Cuidado com queries destrutivas: ANALYZE executa.',
+    },
+    {
+      match: 'Seq Scan',
+      title: 'Sinal ruim',
+      body: 'Sequential Scan = full table scan. Aceitável em tabelas pequenas; ruim em grandes com WHERE seletivo.',
+    },
+    {
+      match: 'Index Scan',
+      title: 'Sinal bom',
+      body: 'Motor encontrou índice. Verifique que "Index Cond" bate com seu WHERE.',
+    },
+    {
+      match: 'cost=',
+      title: 'Estimativa do otimizador',
+      body: 'Custo arbitrário (não segundos). Compare planos alternativos. Menor = melhor.',
+    },
+  ]}
+>
+{`EXPLAIN ANALYZE
+SELECT * FROM users WHERE email = 'ana@x.com';
+
+-- Saída típica (Postgres):
+-- Index Scan using idx_users_email on users (cost=0.43..8.45 rows=1)
+--   Index Cond: (email = 'ana@x.com')
+-- Planning Time: 0.123 ms
+-- Execution Time: 0.045 ms`}
+</AnnotatedCode>
+
+### Custo dos índices
+
+- **Espaço**: 10-30% do tamanho da tabela.
+- **Escrita**: cada INSERT/UPDATE/DELETE atualiza índices.
+- **Manutenção**: VACUUM, REINDEX em Postgres.
+
+Regra: **menos é mais**. Comece com FKs e colunas únicas.
+
+### Coisas que invalidam um índice
+
+```sql
+-- ❌ Função sobre coluna
+WHERE LOWER(email) = 'ana@x.com'
+-- ✓ Índice funcional
+CREATE INDEX idx_users_email_lower ON users(LOWER(email));
+
+-- ❌ Wildcard no início
+WHERE email LIKE '%@gmail.com'
+
+-- ❌ Cast implícito
+WHERE user_id = '123'   -- user_id é INTEGER
+
+-- ❌ OR às vezes força scan
+WHERE email = 'a' OR phone = 'b'
+```
+
+### Erros comuns
+
+- **Indexar por intuição sem EXPLAIN**.
+- **Sobre-indexar tabelas write-heavy**.
+- **Esquecer índice em FKs**.
+- **Funções sobre colunas em WHERE**.
+- **Aplicar conceitos OLTP a warehouse columnar**.
+
+### Para continuar aprendendo
+
+- [Use The Index, Luke!](https://use-the-index-luke.com/)
+- [Postgres EXPLAIN docs](https://www.postgresql.org/docs/current/using-explain.html)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-indexes-quiz"
+  xpReward={80}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'B-tree é bom para...',
+      options: [
+        'Equality e range',
+        'Só equality',
+        'Só full-text',
+        'Tabelas com <100 linhas',
+      ],
+      correctIndex: 0,
+      explanation: 'B-tree suporta =, <, >, BETWEEN, LIKE \'foo%\'.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Mais índices sempre melhoram performance.',
+      correct: false,
+      explanation: 'Índices retardam writes. Comece com poucos.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Por que `WHERE LOWER(email) = "x"` pode não usar índice?',
+      options: [
+        'LOWER não é padrão',
+        'A função transforma a coluna; B-tree de email é inútil. Precisa functional index.',
+        'Só MySQL',
+        'Bug',
+      ],
+      correctIndex: 1,
+      explanation: 'Indexe a expressão.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Cria índice composto.',
+      template: 'CREATE ___ idx_users_cc ON users(country, created_at);',
+      answer: 'INDEX',
+      caseSensitive: false,
+      explanation: 'CREATE INDEX nome ON tabela(cols).',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'EXPLAIN mostra "Seq Scan". Significa:',
+      options: [
+        'Usa índice secundário',
+        'Lê toda tabela — provavelmente falta índice',
+        'Bug',
+        'Query usa LIMIT',
+      ],
+      correctIndex: 1,
+      explanation: 'Seq Scan = full scan.',
+    },
+  ]}
+/>
+
+---
+
+## Exercício prático
+
+<Exercise
+  id="sql-indexes-exercise"
+  title="Detector de queries que invalidam índices"
+  description="Dado um WHERE clause, retorne true se invalida índice convencional."
+  language="javascript"
+  starterCode={`function invalidatesIndex(whereClause) {
+  return false;
+}
+
+console.log(invalidatesIndex("WHERE LOWER(email) = 'a'"));
+console.log(invalidatesIndex("WHERE email = 'a'"));
+console.log(invalidatesIndex("WHERE name LIKE '%foo%'"));
+console.log(invalidatesIndex("WHERE name LIKE 'foo%'"));`}
+  solution={`function invalidatesIndex(whereClause) {
+  if (/[A-Z]+\\([a-z_]+\\)\\s*=/i.test(whereClause)) return true;
+  if (/LIKE\\s+'%/i.test(whereClause)) return true;
+  return false;
+}
+console.log(invalidatesIndex("WHERE LOWER(email) = 'a'"));
+console.log(invalidatesIndex("WHERE email = 'a'"));
+console.log(invalidatesIndex("WHERE name LIKE '%foo%'"));
+console.log(invalidatesIndex("WHERE name LIKE 'foo%'"));`}
+  hints={[
+    'Regex para detectar funções sobre colunas.',
+    'LIKE com % no início é anti-pattern.',
+  ]}
+  tests={[
+    {
+      description: 'função sobre coluna',
+      assert: 'invalidatesIndex("WHERE LOWER(email) = \\\'a\\\'") === true',
+    },
+    {
+      description: 'igualdade simples',
+      assert: 'invalidatesIndex("WHERE email = \\\'a\\\'") === false',
+    },
+    {
+      description: 'LIKE wildcard inicio',
+      assert: 'invalidatesIndex("WHERE name LIKE \\\'%foo%\\\'") === true',
+    },
+    {
+      description: 'LIKE wildcard fim OK',
+      assert: 'invalidatesIndex("WHERE name LIKE \\\'foo%\\\'") === false',
+    },
+  ]}
+/>
+
+---
+
+Próxima lição, a última: **otimização de queries**.

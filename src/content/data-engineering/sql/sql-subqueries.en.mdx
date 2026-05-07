@@ -1,0 +1,285 @@
+## Subqueries
+
+A **subquery** is a query inside another. It lets you decompose a complex
+problem in steps. Subqueries are the mental basis for understanding CTEs
+(next lesson), which are basically named subqueries.
+
+### Three places they appear
+
+1. **In `SELECT`** — return a scalar value.
+2. **In `FROM`** — a "derived table".
+3. **In `WHERE`** — filter against another set.
+
+### Scalar subquery (in SELECT)
+
+Returns **one row, one column**:
+
+```sql
+SELECT
+  user_id,
+  amount,
+  (SELECT AVG(amount) FROM payments) AS global_avg,
+  amount - (SELECT AVG(amount) FROM payments) AS deviation
+FROM payments;
+```
+
+### Correlated subquery
+
+References the outer query:
+
+```sql
+SELECT
+  u.id,
+  u.name,
+  (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) AS orders_count
+FROM users u;
+```
+
+For each `users` row, the subquery is re-evaluated. Useful but slow —
+usually rewrite as `LEFT JOIN + GROUP BY`.
+
+### Subquery in FROM (derived table)
+
+```sql
+SELECT
+  country,
+  AVG(orders_per_user) AS avg_orders_per_user
+FROM (
+  SELECT
+    u.country,
+    u.id AS user_id,
+    COUNT(o.id) AS orders_per_user
+  FROM users u
+  LEFT JOIN orders o ON u.id = o.user_id
+  GROUP BY u.country, u.id
+) AS user_summary
+GROUP BY country;
+```
+
+<Callout type="info" title="Derived table vs CTE">
+  Functionally equivalent in most cases. CTE wins on readability when there
+  are many steps or when reused.
+</Callout>
+
+### IN
+
+```sql
+-- Users who bought
+SELECT id, name FROM users
+WHERE id IN (SELECT DISTINCT user_id FROM orders);
+
+-- Users who NEVER bought
+SELECT id, name FROM users
+WHERE id NOT IN (SELECT user_id FROM orders WHERE user_id IS NOT NULL);
+```
+
+<Callout type="warning" title="NULL and NOT IN">
+  If the subquery can return NULL, NOT IN breaks: NOT IN (..., NULL, ...)
+  returns UNKNOWN for every comparison. Result: 0 rows. That's why we add
+  IS NOT NULL filter, or use NOT EXISTS.
+</Callout>
+
+### EXISTS / NOT EXISTS
+
+Safer and often faster:
+
+<AnnotatedCode
+  language="sql"
+  filename="exists.sql"
+  annotations={[
+    {
+      match: 'WHERE EXISTS',
+      title: 'At least one row exists',
+      body: 'EXISTS returns true if subquery produces ≥ 1 row. Engine stops on first match — efficient.',
+    },
+    {
+      match: 'SELECT 1',
+      title: 'What you project does not matter',
+      body: 'EXISTS only checks "are there rows?". Inner SELECT can be SELECT 1, SELECT *, anything.',
+    },
+    {
+      match: 'WHERE o.user_id = u.id',
+      title: 'Correlation',
+      body: 'Connects the subquery to each outer user. Without it the subquery would be independent.',
+    },
+    {
+      match: 'NOT EXISTS',
+      title: 'NULL-safe anti-join',
+      body: 'Unlike NOT IN, NOT EXISTS works correctly with NULLs. Preferred form for "rows without match".',
+    },
+  ]}
+>
+{`-- Users WITH at least one order
+SELECT u.id, u.name
+FROM users u
+WHERE EXISTS (
+  SELECT 1 FROM orders o WHERE o.user_id = u.id
+);
+
+-- Users WITHOUT any order
+SELECT u.id, u.name
+FROM users u
+WHERE NOT EXISTS (
+  SELECT 1 FROM orders o WHERE o.user_id = u.id
+);`}
+</AnnotatedCode>
+
+### IN vs EXISTS vs JOIN
+
+Three ways to "users with orders":
+
+```sql
+-- A. IN
+SELECT id, name FROM users
+WHERE id IN (SELECT user_id FROM orders);
+
+-- B. EXISTS
+SELECT id, name FROM users u
+WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id);
+
+-- C. JOIN + DISTINCT
+SELECT DISTINCT u.id, u.name
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id;
+```
+
+Rules of thumb:
+
+- **EXISTS** safe with NULLs, often fast.
+- **IN** readable, careful with NULLs.
+- **JOIN + DISTINCT** legible if joining other things, but explicit dedup.
+
+### ANY / ALL operators
+
+```sql
+-- Products with price > MAX of 'basic' category
+WHERE price > ALL (SELECT price FROM products WHERE category = 'basic');
+
+-- Products with price > MIN of 'premium'
+WHERE price > ANY (SELECT price FROM products WHERE category = 'premium');
+```
+
+### Common mistakes
+
+- **Scalar subquery returning > 1 row** — runtime error.
+- **`NOT IN` with NULLs**. Use `NOT EXISTS`.
+- **Nested correlated subqueries** = N×M evaluations.
+- **Subquery when JOIN suffices** — costs readability.
+
+### Keep learning
+
+- [Mode SQL — subqueries](https://mode.com/sql-tutorial/sql-sub-queries/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-subqueries-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'A scalar subquery...',
+      options: [
+        'Can return any number of rows',
+        'Returns exactly one row and one column',
+        'Only works in WHERE',
+        'Not standard SQL',
+      ],
+      correctIndex: 1,
+      explanation: 'If it returns more, the engine errors out.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Why can `NOT IN` break with NULLs?',
+      options: [
+        'NOT IN is not standard',
+        'NULL makes comparisons UNKNOWN; result: 0 rows',
+        'Only works on MySQL',
+        'NOT IN is slower',
+      ],
+      correctIndex: 1,
+      explanation: 'Use NOT EXISTS or filter NULLs.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'In `EXISTS`, what the inner SELECT projects is unused.',
+      correct: true,
+      explanation: 'EXISTS only checks if rows exist; engine ignores columns.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Filter users who never had an order, NULL-safe.',
+      template: 'SELECT u.id FROM users u WHERE NOT ___ (SELECT 1 FROM orders o WHERE o.user_id = u.id);',
+      answer: 'EXISTS',
+      caseSensitive: false,
+      explanation: 'NOT EXISTS is NULL-safe.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'A correlated subquery is evaluated...',
+      options: [
+        'Once',
+        'Once per outer row',
+        'Only in EXPLAIN',
+        'Only with LIMIT',
+      ],
+      correctIndex: 1,
+      explanation: 'Why it is often rewritten as JOIN to avoid N×M.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="sql-subqueries-exercise"
+  title="Anti-join in JS"
+  description="Implement `antiJoin(left, right, leftKey, rightKey)` returning rows from `left` whose `leftKey` does not appear in any `right[rightKey]`. Logical equivalent of NOT EXISTS."
+  language="javascript"
+  starterCode={`function antiJoin(left, right, leftKey, rightKey) {
+  return [];
+}
+
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'},{id:3,name:'Carla'}];
+const orders = [{user_id:1},{user_id:1},{user_id:3}];
+console.log(antiJoin(users, orders, 'id', 'user_id'));`}
+  solution={`function antiJoin(left, right, leftKey, rightKey) {
+  const rightKeys = new Set(right.map(r => r[rightKey]));
+  return left.filter(l => !rightKeys.has(l[leftKey]));
+}
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'},{id:3,name:'Carla'}];
+const orders = [{user_id:1},{user_id:1},{user_id:3}];
+console.log(antiJoin(users, orders, 'id', 'user_id'));`}
+  hints={[
+    'Set gives O(1) membership check.',
+    'filter keeps only those NOT in the set.',
+  ]}
+  tests={[
+    {
+      description: 'users without orders',
+      assert: 'antiJoin([{id:1},{id:2}],[{uid:1}],"id","uid").length === 1',
+    },
+    {
+      description: 'all have orders → empty',
+      assert: 'antiJoin([{id:1}],[{uid:1}],"id","uid").length === 0',
+    },
+    {
+      description: 'right empty → all pass',
+      assert: 'antiJoin([{id:1},{id:2}],[],"id","uid").length === 2',
+    },
+  ]}
+/>
+
+---
+
+Next: **CTEs (WITH)**.

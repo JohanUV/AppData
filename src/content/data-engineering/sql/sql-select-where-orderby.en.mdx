@@ -1,0 +1,264 @@
+## SELECT, WHERE, ORDER BY review
+
+SQL is the Data Engineer's #1 tool. You will read SQL, write SQL, debug
+SQL and review others' SQL every single day. Before diving into JOINs and
+window functions, let's tune the basics: projection (`SELECT`), filtering
+(`WHERE`) and ordering (`ORDER BY`). These three are 60% of your real
+queries.
+
+### The query skeleton
+
+Every basic SQL query follows the same shape:
+
+```sql
+SELECT <columns>
+FROM <table>
+WHERE <filters>
+ORDER BY <columns>
+LIMIT <n>;
+```
+
+Writing order is one thing; **execution order** is another:
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[FROM] --> B[WHERE] --> C[SELECT] --> D[ORDER BY] --> E[LIMIT]`}
+</Diagram>
+
+This matters when you try to use a SELECT alias in WHERE: the engine
+doesn't know it exists yet.
+
+### SELECT: projection
+
+`SELECT` decides **which columns** you want.
+
+```sql
+-- All columns (handy, avoid in production)
+SELECT * FROM users;
+
+-- Aliases
+SELECT user_id AS id, created_at AS signup_date FROM users;
+
+-- Computed columns
+SELECT user_id, amount, amount * 1.19 AS amount_with_tax FROM payments;
+
+-- Drop duplicates
+SELECT DISTINCT country FROM users;
+```
+
+<Callout type="warning" title="Avoid SELECT *">
+  In production queries SELECT * bites you: if someone adds a heavy column
+  (BLOB, huge TEXT) your query slows down without you touching anything.
+  Be explicit about the columns you need.
+</Callout>
+
+### WHERE: row filtering
+
+Common operators:
+
+<AnnotatedCode
+  language="sql"
+  filename="filters.sql"
+  annotations={[
+    {
+      match: "BETWEEN '2026-01-01' AND '2026-01-31'",
+      title: 'Inclusive range',
+      body: 'BETWEEN includes both ends. Equivalent to created_at >= "2026-01-01" AND created_at <= "2026-01-31".',
+    },
+    {
+      match: "country IN ('CO', 'MX', 'AR')",
+      title: 'Set membership',
+      body: 'IN avoids writing OR chains. For very large sets, consider UNION or a subquery.',
+    },
+    {
+      match: "email LIKE '%@gmail.com'",
+      title: 'Wildcard pattern',
+      body: '% matches any number of characters; _ matches exactly one. Engine-sensitive: Postgres LIKE is case-sensitive (use ILIKE for insensitive).',
+    },
+    {
+      match: 'IS NOT NULL',
+      title: 'NULL ≠ values',
+      body: 'NULL is not comparable with = or !=. ALWAYS use IS NULL / IS NOT NULL.',
+    },
+  ]}
+>
+{`SELECT user_id, email, country, signup_date
+FROM users
+WHERE
+  signup_date BETWEEN '2026-01-01' AND '2026-01-31'
+  AND country IN ('CO', 'MX', 'AR')
+  AND email LIKE '%@gmail.com'
+  AND deleted_at IS NOT NULL;`}
+</AnnotatedCode>
+
+### NULLs: the eternal headache
+
+Comparisons with `NULL` always return `NULL`, not true/false:
+
+```sql
+-- DOES NOT WORK:
+SELECT * FROM users WHERE country = NULL;     -- always 0 rows
+-- USE THIS:
+SELECT * FROM users WHERE country IS NULL;
+```
+
+This is the #1 cause of "fewer rows than expected" queries.
+
+### ORDER BY
+
+```sql
+ORDER BY signup_date DESC;       -- newest first
+ORDER BY country ASC, signup_date DESC;
+ORDER BY 2 DESC;                 -- by SELECT position
+ORDER BY signup_date DESC NULLS LAST;
+```
+
+### LIMIT
+
+```sql
+SELECT * FROM users
+ORDER BY signup_date DESC
+LIMIT 10;
+
+LIMIT 10 OFFSET 20;               -- pagination, rows 21-30
+```
+
+For large datasets OFFSET is inefficient (scans from the start). Pros use
+**cursor pagination**: filter by the last seen row instead of skipping.
+
+### Common mistakes
+
+- **`WHERE col = NULL`** — always 0 rows; use `IS NULL`.
+- **`ORDER BY` without `LIMIT`** on huge datasets sorts the whole table
+  for nothing.
+- **Forgetting that logical order ≠ writing order**. SELECT aliases are
+  not usable in WHERE.
+- **`LIKE '%foo%'`** without index: full table scan guaranteed. For text
+  search, use full-text indexes.
+- **Comparing dates as strings**. Use the right type.
+
+### Keep learning
+
+- [Mode SQL Tutorial](https://mode.com/sql-tutorial/)
+- [SQLBolt](https://sqlbolt.com/)
+- [Postgres SELECT docs](https://www.postgresql.org/docs/current/sql-select.html)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-select-where-quiz"
+  xpReward={50}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'In what order do these clauses execute?',
+      options: [
+        'SELECT → FROM → WHERE → ORDER BY',
+        'FROM → WHERE → SELECT → ORDER BY',
+        'WHERE → FROM → SELECT → ORDER BY',
+        'FROM → SELECT → WHERE → ORDER BY',
+      ],
+      correctIndex: 1,
+      explanation: 'FROM identifies the table; WHERE filters; SELECT projects; ORDER BY sorts.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Correct way to find rows with NULL country?',
+      options: [
+        "WHERE country = NULL",
+        "WHERE country = ''",
+        'WHERE country IS NULL',
+        "WHERE country != 'not null'",
+      ],
+      correctIndex: 2,
+      explanation: 'NULL comparisons return NULL; use IS NULL / IS NOT NULL.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: '`BETWEEN a AND b` is inclusive at both ends.',
+      correct: true,
+      explanation: 'Equivalent to >= a AND <= b.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Drop duplicates.',
+      template: 'SELECT ___ country FROM users;',
+      answer: 'DISTINCT',
+      caseSensitive: false,
+      explanation: 'DISTINCT removes duplicate rows from the result.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Why avoid `LIKE \'%foo%\'` on big columns?',
+      options: [
+        'Not standard SQL',
+        'Causes full table scan: cannot use a regular B-tree index',
+        'Only works on MySQL',
+        'It is case-insensitive',
+      ],
+      correctIndex: 1,
+      explanation: 'Leading wildcard prevents B-tree usage; use full-text search.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="sql-select-exercise"
+  title="WHERE builder"
+  description="Implement `buildWhere(filters)` taking an object and returning the WHERE clause as a string. Supports strings (=), arrays (IN), null (IS NULL)."
+  language="javascript"
+  starterCode={`function buildWhere(filters) {
+  return '';
+}
+
+console.log(buildWhere({ country: 'CO', plan: ['gold','platinum'], deleted_at: null }));`}
+  solution={`function buildWhere(filters) {
+  const parts = [];
+  for (const [k, v] of Object.entries(filters)) {
+    if (v === null) parts.push(\`\${k} IS NULL\`);
+    else if (Array.isArray(v)) parts.push(\`\${k} IN (\${v.map(x => "'"+x+"'").join(',')})\`);
+    else parts.push(\`\${k} = '\${v}'\`);
+  }
+  return parts.length ? 'WHERE ' + parts.join(' AND ') : '';
+}
+console.log(buildWhere({ country: 'CO', plan: ['gold','platinum'], deleted_at: null }));`}
+  hints={[
+    'Object.entries gives you [key, value] pairs.',
+    'Array.isArray distinguishes lists from plain values.',
+    'Empty filters → empty string.',
+  ]}
+  tests={[
+    {
+      description: 'simple string',
+      assert: 'buildWhere({country:"CO"}) === "WHERE country = \\\'CO\\\'"',
+    },
+    {
+      description: 'IN with array',
+      assert: 'buildWhere({plan:["gold","silver"]}) === "WHERE plan IN (\\\'gold\\\',\\\'silver\\\')"',
+    },
+    {
+      description: 'explicit NULL',
+      assert: 'buildWhere({deleted_at:null}) === "WHERE deleted_at IS NULL"',
+    },
+    {
+      description: 'empty',
+      assert: 'buildWhere({}) === ""',
+    },
+  ]}
+/>
+
+---
+
+Next: **JOINs in depth** — the operation that ties tables together.

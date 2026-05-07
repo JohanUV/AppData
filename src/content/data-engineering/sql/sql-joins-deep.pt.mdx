@@ -1,0 +1,243 @@
+## JOINs em profundidade
+
+`JOIN` permite combinar linhas de duas ou mais tabelas baseado em uma
+coluna relacionada. É o que faz o SQL ser SQL. Também é onde mais erros
+bobos acontecem: uma condição mal escrita e seu relatório triplica as
+vendas do mês.
+
+### As 4 variantes que de fato você usa
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[INNER JOIN<br/>só matches] --- B[LEFT JOIN<br/>tudo da esquerda<br/>+ matches]
+  B --- C[RIGHT JOIN<br/>raro]
+  C --- D[FULL OUTER JOIN<br/>tudo dos dois lados]`}
+</Diagram>
+
+Tabelas de exemplo:
+
+```sql
+-- users: id, name = 1/Ana, 2/Beto, 3/Carla
+-- orders: id, user_id, amount = 10/1/100, 11/1/50, 12/4/80
+```
+
+### INNER JOIN: só matches
+
+```sql
+SELECT u.name, o.amount
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id;
+```
+
+Resultado: Ana/100, Ana/50. Carla, Beto e order 12 não aparecem.
+Interseção.
+
+### LEFT JOIN: tudo da esquerda
+
+```sql
+SELECT u.name, o.amount
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id;
+```
+
+Todos os users aparecem; quem não tem orders sai com NULL. JOIN mais
+usado em analítica.
+
+### RIGHT JOIN: pule
+
+Quase sempre reescrito como LEFT JOIN com tabelas invertidas — mais
+legível.
+
+### FULL OUTER JOIN: tudo dos dois
+
+Útil para detectar inconsistências.
+
+### Multiplos JOINs
+
+<AnnotatedCode
+  language="sql"
+  filename="multi-join.sql"
+  annotations={[
+    {
+      match: 'AS u',
+      title: 'Aliases para legibilidade',
+      body: 'Em queries com várias tabelas, aliases curtos tornam o código gerenciável.',
+    },
+    {
+      match: 'ON u.id = o.user_id',
+      title: 'Condição do JOIN',
+      body: 'A coluna que conecta. Quase sempre PK ↔ FK. Errar aqui pode explodir linhas ou retornar vazio.',
+    },
+    {
+      match: "AND o.status = 'paid'",
+      title: 'Filtros adicionais no ON',
+      body: 'Em LEFT JOIN, filtro no ON preserva linha esquerda com NULLs; em WHERE elimina.',
+    },
+    {
+      match: 'LEFT JOIN order_items oi',
+      title: 'Cuidado com explosão de linhas',
+      body: 'Se um order tem 5 items, esta query devolve 5 linhas por order.',
+    },
+  ]}
+>
+{`SELECT
+  u.name,
+  o.id AS order_id,
+  oi.product_name,
+  oi.quantity
+FROM users AS u
+INNER JOIN orders AS o
+  ON u.id = o.user_id
+  AND o.status = 'paid'
+LEFT JOIN order_items oi
+  ON o.id = oi.order_id
+WHERE u.country = 'CO'
+ORDER BY o.created_at DESC;`}
+</AnnotatedCode>
+
+### Erro clássico: explosão de linhas
+
+3 orders × 4 items = 12 linhas, não 3. Para contar orders únicas use
+`COUNT(DISTINCT o.id)`.
+
+### Self JOIN
+
+```sql
+SELECT u1.name AS u1, u2.name AS u2, u1.country
+FROM users u1
+INNER JOIN users u2
+  ON u1.country = u2.country
+  AND u1.id < u2.id;
+```
+
+`u1.id < u2.id` evita duplicatas (Ana-Beto e Beto-Ana).
+
+### USING vs ON
+
+Prefira `ON` para clareza.
+
+### Erros comuns
+
+- **Esquecer condição do JOIN** — alguns motores tratam como CROSS JOIN.
+- **JOIN com tabela duplicada** sem perceber.
+- **LEFT JOIN seguido de WHERE em coluna da direita**: anula o LEFT.
+- **Sem aliases**: queries com 4+ tabelas ficam ilegíveis.
+
+### Para continuar aprendendo
+
+- [SQL Joins explained — Mode](https://mode.com/sql-tutorial/sql-joins/)
+- [Visualizing SQL Joins](https://blog.codinghorror.com/a-visual-explanation-of-sql-joins/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-joins-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'INNER JOIN retorna...',
+      options: [
+        'Tudo da esquerda + matches',
+        'Apenas linhas que coincidem nas duas tabelas',
+        'Tudo da direita',
+        'Combinação total (cross join)',
+      ],
+      correctIndex: 1,
+      explanation: 'Interseção: linhas com match nos dois lados.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '"Todos os usuários, com sua última order se houver". Qual JOIN?',
+      options: ['INNER JOIN', 'LEFT JOIN', 'FULL OUTER JOIN', 'CROSS JOIN'],
+      correctIndex: 1,
+      explanation: 'LEFT JOIN preserva todos os users.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'LEFT JOIN seguido de `WHERE orders.id IS NULL` retorna users sem orders.',
+      correct: true,
+      explanation: 'Padrão "anti-join".',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Conta orders únicas evitando duplicação por items.',
+      template: 'SELECT u.id, COUNT(___ o.id) FROM users u LEFT JOIN orders o ON ... LEFT JOIN order_items oi ON ... GROUP BY u.id;',
+      answer: 'DISTINCT',
+      caseSensitive: false,
+      explanation: 'COUNT(DISTINCT o.id) deduplica.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q5',
+      prompt: 'Diagnostique "meu relatório triplica as vendas".',
+      steps: [
+        'Verificar duplicatas em cada tabela',
+        'Contar linhas por usuário antes de agregar',
+        'Identificar o JOIN que infla',
+        'Adicionar DISTINCT ou subquery agregado',
+      ],
+      explanation: 'Investigar → causa → fix.',
+    },
+  ]}
+/>
+
+---
+
+## Exercício prático
+
+<Exercise
+  id="sql-joins-exercise"
+  title="Simulador de INNER JOIN"
+  description="Implemente `innerJoinSimple(left, right, leftKey, rightKey)`."
+  language="javascript"
+  starterCode={`function innerJoinSimple(left, right, leftKey, rightKey) {
+  return [];
+}
+
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'}];
+const orders = [{user_id:1,amount:100},{user_id:1,amount:50},{user_id:3,amount:80}];
+console.log(innerJoinSimple(users, orders, 'id', 'user_id'));`}
+  solution={`function innerJoinSimple(left, right, leftKey, rightKey) {
+  const out = [];
+  for (const l of left) {
+    for (const r of right) {
+      if (l[leftKey] === r[rightKey]) out.push({ ...l, ...r });
+    }
+  }
+  return out;
+}
+
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'}];
+const orders = [{user_id:1,amount:100},{user_id:1,amount:50},{user_id:3,amount:80}];
+console.log(innerJoinSimple(users, orders, 'id', 'user_id'));`}
+  hints={[
+    'Loop sobre left, depois right; combine se chaves casarem.',
+    'Use spread para mesclar objetos.',
+  ]}
+  tests={[
+    {
+      description: 'Match simples',
+      assert: 'JSON.stringify(innerJoinSimple([{id:1,n:"a"}],[{uid:1,v:10}],"id","uid")) === \\\'[{"id":1,"n":"a","uid":1,"v":10}]\\\'',
+    },
+    {
+      description: 'Sem matches',
+      assert: 'innerJoinSimple([{id:1}],[{uid:2}],"id","uid").length === 0',
+    },
+    {
+      description: 'Múltiplos matches multiplicam',
+      assert: 'innerJoinSimple([{id:1}],[{uid:1},{uid:1}],"id","uid").length === 2',
+    },
+  ]}
+/>
+
+---
+
+Próxima lição: **agregações e GROUP BY**.

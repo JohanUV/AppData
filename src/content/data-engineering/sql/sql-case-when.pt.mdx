@@ -1,0 +1,227 @@
+## CASE WHEN e lógica condicional
+
+`CASE WHEN` é o if/else do SQL. Permite gerar colunas condicionais,
+categorizar dados, lidar com NULLs com elegância e mover lógica do app
+para o warehouse.
+
+### Duas sintaxes
+
+**1. CASE buscado (mais usado):**
+
+```sql
+SELECT user_id, amount,
+  CASE
+    WHEN amount < 10 THEN 'small'
+    WHEN amount < 100 THEN 'medium'
+    WHEN amount < 1000 THEN 'large'
+    ELSE 'huge'
+  END AS bucket
+FROM payments;
+```
+
+**2. CASE simples:**
+
+```sql
+CASE status
+  WHEN 'paid' THEN 1
+  WHEN 'pending' THEN 0
+  ELSE -1
+END
+```
+
+`ELSE` é opcional mas recomendado. Sem ele, sem match → NULL.
+
+### Casos típicos
+
+**Categorização:**
+
+```sql
+SELECT
+  CASE
+    WHEN age < 18 THEN 'minor'
+    WHEN age < 30 THEN 'young_adult'
+    WHEN age < 60 THEN 'adult'
+    ELSE 'senior'
+  END AS age_group,
+  COUNT(*)
+FROM users GROUP BY 1;
+```
+
+**Pivots manuais:**
+
+```sql
+SELECT
+  date_trunc('day', created_at) AS day,
+  SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS revenue_paid,
+  SUM(CASE WHEN status = 'refunded' THEN amount ELSE 0 END) AS revenue_refunded,
+  SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END) AS revenue_pending
+FROM payments GROUP BY 1;
+```
+
+**Contagens condicionais:**
+
+```sql
+SELECT user_id,
+  COUNT(*) AS total_orders,
+  COUNT(CASE WHEN status = 'paid' THEN 1 END) AS paid_orders
+FROM payments GROUP BY user_id;
+```
+
+### CASE como NULL-handler
+
+```sql
+SELECT user_id, COALESCE(country, 'unknown') AS country FROM users;
+```
+
+`COALESCE(a, b, c)` retorna o primeiro não-NULL.
+
+### IIF, IF, NULLIF
+
+```sql
+IIF(amount > 100, 'big', 'small')
+NULLIF(quantity, 0)                -- evita divisão por zero
+COALESCE(nickname, name, 'anon')
+```
+
+`NULLIF(x, y)` retorna NULL se x = y.
+
+```sql
+SELECT amount / NULLIF(quantity, 0) AS unit_price FROM order_items;
+```
+
+### Padrões avançados
+
+**Tag first/last/only em partição:**
+
+```sql
+WITH ranked AS (
+  SELECT *,
+    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) AS rn,
+    COUNT(*) OVER (PARTITION BY user_id) AS total
+  FROM purchases
+)
+SELECT user_id, amount,
+  CASE
+    WHEN total = 1 THEN 'only'
+    WHEN rn = 1 THEN 'first'
+    WHEN rn = total THEN 'last'
+    ELSE 'middle'
+  END AS purchase_position
+FROM ranked;
+```
+
+### Erros comuns
+
+- **Esquecer `ELSE`** — NULL inesperado.
+- **Misturar tipos nos THENs**.
+- **`CASE` quando `COALESCE` ou `NULLIF` bastam**.
+- **Aninhar 5 níveis**.
+
+### Para continuar aprendendo
+
+- [Postgres — Conditional expressions](https://www.postgresql.org/docs/current/functions-conditional.html)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-case-when-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'CASE sem ELSE e nada bate, retorna...',
+      options: [
+        'Erro',
+        'NULL',
+        '0',
+        'Primeiro THEN',
+      ],
+      correctIndex: 1,
+      explanation: 'NULL é o default.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'COALESCE(a, b) equivale a CASE WHEN a IS NOT NULL THEN a ELSE b END.',
+      correct: true,
+      explanation: 'COALESCE retorna primeiro não-NULL.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Para evitar divisão por zero:',
+      options: ['COALESCE', 'NULLIF', 'IFF', 'NVL'],
+      correctIndex: 1,
+      explanation: 'NULLIF(x, 0) converte 0 em NULL.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Conta só orders pagas.',
+      template: 'COUNT(___ WHEN status = \\\'paid\\\' THEN 1 END)',
+      answer: 'CASE',
+      caseSensitive: false,
+      explanation: 'COUNT(CASE WHEN ... THEN 1 END).',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Pivot manual usando CASE:',
+      options: [
+        'Não é possível sem PIVOT nativo',
+        'SUM(CASE WHEN status = \'X\' THEN amount ELSE 0 END) por estado',
+        'Só com UNION',
+        'Só Snowflake',
+      ],
+      correctIndex: 1,
+      explanation: 'Truque clássico em qualquer motor.',
+    },
+  ]}
+/>
+
+---
+
+## Exercício prático
+
+<Exercise
+  id="sql-case-when-exercise"
+  title="Categorizador de valores"
+  description="Implemente `bucketize(amount)`: 'small' se <10, 'medium' se <100, 'large' se <1000, 'huge' caso contrário."
+  language="javascript"
+  starterCode={`function bucketize(amount) {
+  return '';
+}
+
+console.log(bucketize(5));
+console.log(bucketize(50));
+console.log(bucketize(500));
+console.log(bucketize(5000));`}
+  solution={`function bucketize(amount) {
+  if (amount < 10) return 'small';
+  if (amount < 100) return 'medium';
+  if (amount < 1000) return 'large';
+  return 'huge';
+}
+console.log(bucketize(5));
+console.log(bucketize(50));
+console.log(bucketize(500));
+console.log(bucketize(5000));`}
+  hints={[
+    'Cadeia de if/else em ordem ascendente.',
+  ]}
+  tests={[
+    { description: 'small', assert: 'bucketize(5) === "small"' },
+    { description: 'medium', assert: 'bucketize(50) === "medium"' },
+    { description: 'large', assert: 'bucketize(500) === "large"' },
+    { description: 'huge', assert: 'bucketize(5000) === "huge"' },
+    { description: '10 → medium', assert: 'bucketize(10) === "medium"' },
+  ]}
+/>
+
+---
+
+Próxima lição: **índices e performance**.

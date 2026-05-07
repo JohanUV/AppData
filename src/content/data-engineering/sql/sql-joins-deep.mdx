@@ -1,0 +1,332 @@
+## JOINs en profundidad
+
+`JOIN` es la operación que te permite combinar filas de dos o más tablas
+basándose en una columna relacionada. Es la herramienta que hace que SQL
+sea SQL — sin ella tendrías una tabla gigante denormalizada y muchos
+problemas. Pero también es donde más errores tontos ocurren: una
+condición de JOIN mal escrita y tu reporte triplica las ventas del mes.
+
+### Las 4 variantes que de verdad usarás
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[INNER JOIN<br/>sólo coincidencias] --- B[LEFT JOIN<br/>todo de la izquierda<br/>+ coincidencias]
+  B --- C[RIGHT JOIN<br/>raro en la práctica]
+  C --- D[FULL OUTER JOIN<br/>todo de ambas]`}
+</Diagram>
+
+Tablas de ejemplo:
+
+```sql
+-- users
+id | name
+1  | Ana
+2  | Beto
+3  | Carla
+
+-- orders
+id | user_id | amount
+10 | 1       | 100
+11 | 1       | 50
+12 | 4       | 80
+```
+
+### INNER JOIN: sólo coincidencias
+
+```sql
+SELECT u.name, o.amount
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id;
+```
+
+Resultado:
+
+```
+name | amount
+Ana  | 100
+Ana  | 50
+```
+
+Carla no aparece (no tiene órdenes). Beto tampoco. La orden 12 (user_id=4)
+tampoco (no hay user 4). `INNER JOIN` es la intersección.
+
+### LEFT JOIN: todo de la izquierda
+
+```sql
+SELECT u.name, o.amount
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id;
+```
+
+```
+name  | amount
+Ana   | 100
+Ana   | 50
+Beto  | NULL
+Carla | NULL
+```
+
+Todos los users aparecen. Si no tienen orden, las columnas de `orders`
+salen `NULL`. Es el JOIN más usado en analítica: "todos los usuarios y
+sus órdenes (si las tienen)".
+
+### RIGHT JOIN: en general no lo uses
+
+```sql
+-- Equivalente lógico a LEFT JOIN con tablas invertidas
+SELECT u.name, o.amount
+FROM users u
+RIGHT JOIN orders o ON u.id = o.user_id;
+```
+
+Devuelve todas las órdenes y los users que coincidan. Casi siempre se
+escribe como `LEFT JOIN` reordenando — más legible.
+
+### FULL OUTER JOIN: todo de ambas
+
+```sql
+SELECT u.name, o.amount
+FROM users u
+FULL OUTER JOIN orders o ON u.id = o.user_id;
+```
+
+Trae filas que no coinciden de ningún lado. Útil para detectar
+inconsistencias: usuarios sin órdenes + órdenes huérfanas.
+
+### Multiples JOINs
+
+En la realidad, encadenas varias tablas:
+
+<AnnotatedCode
+  language="sql"
+  filename="multi-join.sql"
+  annotations={[
+    {
+      match: 'AS u',
+      title: 'Aliases para legibilidad',
+      body: 'En queries con varias tablas, los aliases cortos hacen el código manejable. AS es opcional pero conviene.',
+    },
+    {
+      match: 'ON u.id = o.user_id',
+      title: 'Condición del JOIN',
+      body: 'La columna que conecta. Casi siempre PK ↔ FK. Si te equivocas aquí (e.g. conectas mal), el resultado puede explotar en filas o salir vacío.',
+    },
+    {
+      match: "AND o.status = 'paid'",
+      title: 'Filtros adicionales en el ON',
+      body: 'Puedes agregar filtros al ON. Diferencia clave con WHERE en LEFT JOIN: un filtro en ON preserva la fila izquierda con NULLs; el mismo en WHERE la elimina.',
+    },
+    {
+      match: 'LEFT JOIN order_items oi',
+      title: 'Cuidado con explosión de filas',
+      body: 'Si un order tiene 5 items, esta query devuelve 5 filas por order. Para agregar (cantidad total) usa GROUP BY o un subquery agregado.',
+    },
+  ]}
+>
+{`SELECT
+  u.name,
+  o.id AS order_id,
+  oi.product_name,
+  oi.quantity
+FROM users AS u
+INNER JOIN orders AS o
+  ON u.id = o.user_id
+  AND o.status = 'paid'
+LEFT JOIN order_items oi
+  ON o.id = oi.order_id
+WHERE u.country = 'CO'
+ORDER BY o.created_at DESC;`}
+</AnnotatedCode>
+
+### El error clásico: explosión de filas
+
+Un cliente tiene 3 órdenes; cada orden tiene 4 items. Si haces:
+
+```sql
+SELECT u.id, COUNT(*) AS rows
+FROM users u
+LEFT JOIN orders o ON u.id = o.user_id
+LEFT JOIN order_items oi ON o.id = oi.order_id
+GROUP BY u.id;
+```
+
+Verás `12` filas para ese usuario, no 3. El JOIN multiplicó. Para contar
+órdenes únicas usa `COUNT(DISTINCT o.id)`. Para sumar montos sin duplicar,
+usa subqueries agregados o CTEs (lección 5).
+
+### Self JOIN
+
+Cuando una tabla se une a sí misma. Ejemplo: encontrar pares de usuarios
+del mismo país:
+
+```sql
+SELECT u1.name AS u1, u2.name AS u2, u1.country
+FROM users u1
+INNER JOIN users u2
+  ON u1.country = u2.country
+  AND u1.id < u2.id;
+```
+
+`u1.id < u2.id` evita duplicados (Ana-Beto y Beto-Ana).
+
+### USING vs ON
+
+Cuando las columnas se llaman igual en ambas tablas:
+
+```sql
+-- Largo
+INNER JOIN orders o ON u.id = o.id
+
+-- Corto (sólo si la columna se llama igual)
+INNER JOIN orders USING (id)
+```
+
+`USING` es elegante pero confunde si las dos columnas tienen el mismo
+nombre por casualidad. Prefiere `ON` para ser explícito.
+
+### Errores comunes
+
+- **Olvidar la condición del JOIN** (escribir solo `JOIN orders` sin
+  `ON`). Algunos motores lo aceptan como CROSS JOIN — explosión total.
+- **JOIN a tabla con duplicados** sin darte cuenta. Verifica con
+  `SELECT col, COUNT(*) FROM tabla GROUP BY col HAVING COUNT(*) > 1`.
+- **LEFT JOIN seguido de filtro WHERE en columna de la derecha**: anula
+  el LEFT (porque NULL no pasa el filtro). Mueve el filtro al `ON`.
+- **No declarar aliases**: queries con 4+ tablas se vuelven ilegibles.
+- **Pensar que INNER JOIN preserva el orden**. No. SQL no garantiza
+  orden sin `ORDER BY`.
+
+### Para seguir aprendiendo
+
+- [SQL Joins explained — Mode](https://mode.com/sql-tutorial/sql-joins/)
+- [Visualizing SQL Joins](https://blog.codinghorror.com/a-visual-explanation-of-sql-joins/) — el clásico de Jeff Atwood.
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-joins-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'INNER JOIN devuelve...',
+      options: [
+        'Todas las filas de la izquierda + coincidencias',
+        'Sólo filas que coinciden en ambas tablas',
+        'Todas las filas de la derecha',
+        'Combinatoria total (cross join)',
+      ],
+      correctIndex: 1,
+      explanation: 'Es la intersección: sólo filas con match en ambas tablas.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Quieres "todos los usuarios, con su última orden si tienen". ¿Qué JOIN?',
+      options: ['INNER JOIN', 'LEFT JOIN', 'FULL OUTER JOIN', 'CROSS JOIN'],
+      correctIndex: 1,
+      explanation: 'LEFT JOIN preserva todos los users y rellena con NULLs los que no tienen orden.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Un LEFT JOIN seguido de `WHERE orders.id IS NULL` devuelve los users sin órdenes.',
+      correct: true,
+      explanation: 'Patrón "anti-join": filas de izquierda sin match.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Cuenta órdenes únicas evitando duplicados por items.',
+      template: 'SELECT u.id, COUNT(___ o.id) FROM users u LEFT JOIN orders o ON ... LEFT JOIN order_items oi ON ... GROUP BY u.id;',
+      answer: 'DISTINCT',
+      caseSensitive: false,
+      explanation: 'COUNT(DISTINCT o.id) deduplica los IDs de orden inflados por el join a items.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q5',
+      prompt: 'Ordena los pasos para diagnosticar "mi reporte triplica las ventas".',
+      steps: [
+        'Comprueba duplicados en cada tabla por la columna de join',
+        'Cuenta filas por usuario antes de agregar',
+        'Identifica el JOIN que infla',
+        'Agrega DISTINCT o subquery agregado',
+      ],
+      explanation: 'Investigación → causa → fix.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="sql-joins-exercise"
+  title="Simulador de INNER JOIN"
+  description="Implementa `innerJoin(left, right, key)` que recibe dos arrays de objetos y la columna de unión, y devuelve el producto cartesiano filtrado donde left[key] === right[key]."
+  language="javascript"
+  starterCode={`function innerJoin(left, right, key) {
+  const out = [];
+  // Tu código aquí
+  return out;
+}
+
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'}];
+const orders = [{user_id:1,amount:100},{user_id:1,amount:50},{user_id:3,amount:80}];
+console.log(innerJoin(users, orders, 'id'));`}
+  solution={`function innerJoin(left, right, key) {
+  const out = [];
+  for (const l of left) {
+    for (const r of right) {
+      if (l[key] === r[key.replace(/^id$/, 'user_id')] || l[key] === r[key]) {
+        out.push({ ...l, ...r });
+      }
+    }
+  }
+  return out;
+}
+// Versión más simple: asume mismo key en ambos lados.
+function innerJoinSimple(left, right, leftKey, rightKey) {
+  const out = [];
+  for (const l of left) {
+    for (const r of right) {
+      if (l[leftKey] === r[rightKey]) out.push({ ...l, ...r });
+    }
+  }
+  return out;
+}
+
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'}];
+const orders = [{user_id:1,amount:100},{user_id:1,amount:50},{user_id:3,amount:80}];
+console.log(innerJoinSimple(users, orders, 'id', 'user_id'));`}
+  hints={[
+    'Para cada fila izquierda, recorre las derechas y combina si coinciden.',
+    'Usa spread (...) para mezclar los objetos.',
+    'En la práctica usarás dos parámetros: leftKey y rightKey.',
+  ]}
+  tests={[
+    {
+      description: 'Match simple',
+      assert: 'JSON.stringify(innerJoinSimple([{id:1,n:"a"}],[{uid:1,v:10}],"id","uid")) === \\\'[{"id":1,"n":"a","uid":1,"v":10}]\\\'',
+    },
+    {
+      description: 'Sin matches devuelve vacío',
+      assert: 'innerJoinSimple([{id:1}],[{uid:2}],"id","uid").length === 0',
+    },
+    {
+      description: 'Multiples coincidencias multiplican',
+      assert: 'innerJoinSimple([{id:1}],[{uid:1},{uid:1}],"id","uid").length === 2',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **agregaciones y GROUP BY** — convertir muchas filas en
+métricas resumidas.

@@ -1,0 +1,319 @@
+## Agregaciones y GROUP BY
+
+Las agregaciones son la razón por la que SQL es tan poderoso para
+analítica: convierten millones de filas crudas en métricas resumidas. En
+lugar de mirar cada transacción individual, miras "ventas totales por
+día y por país". `GROUP BY` es la cláusula que hace eso posible.
+
+### Las funciones de agregación básicas
+
+```sql
+SELECT
+  COUNT(*) AS rows_count,
+  COUNT(DISTINCT user_id) AS unique_users,
+  SUM(amount) AS total_revenue,
+  AVG(amount) AS avg_ticket,
+  MIN(amount) AS smallest_sale,
+  MAX(amount) AS biggest_sale
+FROM payments
+WHERE status = 'paid';
+```
+
+Sin `GROUP BY`, todas estas funciones colapsan toda la tabla a una sola
+fila. Es el "modo summary": una métrica de cada cosa.
+
+`COUNT(*)` cuenta filas; `COUNT(col)` cuenta filas donde `col` no es
+NULL; `COUNT(DISTINCT col)` cuenta valores únicos no nulos. Tres cosas
+distintas — confúndelas y el reporte sale mal.
+
+### GROUP BY: agrupar antes de agregar
+
+```sql
+SELECT
+  country,
+  COUNT(*) AS orders,
+  SUM(amount) AS revenue
+FROM payments
+GROUP BY country;
+```
+
+Una fila por country. Cada fila resume todas las órdenes de ese país. Si
+agregas más columnas al SELECT, deben aparecer también en GROUP BY (o
+ser agregaciones):
+
+```sql
+-- ESTO FALLA en SQL estándar:
+SELECT country, city, COUNT(*) FROM payments GROUP BY country;
+-- Error: city no está en GROUP BY ni es agregación
+
+-- BIEN:
+SELECT country, city, COUNT(*) FROM payments GROUP BY country, city;
+```
+
+(MySQL antiguo era permisivo aquí, pero esa "comodidad" producía bugs
+silenciosos. Postgres y SQL Server son estrictos.)
+
+### El orden lógico revisado
+
+Ahora con agregaciones:
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[FROM] --> B[WHERE] --> C[GROUP BY] --> D[HAVING] --> E[SELECT] --> F[ORDER BY] --> G[LIMIT]`}
+</Diagram>
+
+`WHERE` filtra **antes** de agrupar; `HAVING` filtra **después**.
+Confundirlos rompe queries:
+
+```sql
+-- ¿Países con más de 100 órdenes pagadas?
+
+-- BIEN:
+SELECT country, COUNT(*) AS n
+FROM payments
+WHERE status = 'paid'        -- filtra filas individuales
+GROUP BY country
+HAVING COUNT(*) > 100;        -- filtra grupos
+
+-- MAL:
+SELECT country, COUNT(*) AS n
+FROM payments
+WHERE COUNT(*) > 100          -- error: COUNT no existe aún en WHERE
+GROUP BY country;
+```
+
+### Múltiples niveles de agregación
+
+```sql
+SELECT
+  date_trunc('month', created_at) AS month,
+  country,
+  COUNT(*) AS orders,
+  SUM(amount) AS revenue,
+  AVG(amount) AS avg_ticket
+FROM payments
+WHERE status = 'paid'
+GROUP BY 1, 2
+ORDER BY 1 DESC, revenue DESC;
+```
+
+`GROUP BY 1, 2` agrupa por las dos primeras columnas del SELECT (mes y
+country). `date_trunc` (Postgres) trunca un timestamp al inicio del
+periodo — `'month'`, `'day'`, `'hour'`. Equivalentes:
+
+- BigQuery: `DATE_TRUNC(created_at, MONTH)`
+- Snowflake: `DATE_TRUNC('month', created_at)`
+- MySQL: `DATE_FORMAT(created_at, '%Y-%m-01')`
+
+### Agregaciones con condicional
+
+`SUM` y `COUNT` con `CASE WHEN` te dan métricas conjuntas:
+
+<AnnotatedCode
+  language="sql"
+  filename="conditional-agg.sql"
+  annotations={[
+    {
+      match: "SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END)",
+      title: 'SUM condicional',
+      body: 'Suma sólo cuando la condición se cumple. Equivalente a SUM(amount) FILTER (WHERE status = "paid") en Postgres moderno.',
+    },
+    {
+      match: 'COUNT(*) FILTER',
+      title: 'Sintaxis FILTER (Postgres)',
+      body: 'Más legible que CASE WHEN. No todos los motores la soportan; es estándar SQL pero MySQL no la implementa.',
+    },
+    {
+      match: '1.0 *',
+      title: 'Cast a decimal',
+      body: 'Sin el 1.0, COUNT/COUNT da división entera (siempre 0 o 1). Multiplica por 1.0 para forzar decimal.',
+    },
+  ]}
+>
+{`SELECT
+  date_trunc('day', created_at) AS day,
+  COUNT(*) AS attempts,
+  COUNT(*) FILTER (WHERE status = 'paid') AS successes,
+  SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS revenue,
+  1.0 * COUNT(*) FILTER (WHERE status = 'paid') / COUNT(*) AS success_rate
+FROM payments
+WHERE created_at >= current_date - 30
+GROUP BY 1
+ORDER BY 1;`}
+</AnnotatedCode>
+
+### Métricas comunes en analítica
+
+Patrones que vas a escribir mil veces:
+
+```sql
+-- DAU (daily active users)
+SELECT date_trunc('day', event_at) AS day,
+       COUNT(DISTINCT user_id) AS dau
+FROM events GROUP BY 1;
+
+-- Conversión de embudo
+SELECT step, COUNT(DISTINCT user_id) AS users
+FROM funnel_events GROUP BY step ORDER BY step;
+
+-- Top N por categoría (sin window functions)
+SELECT country, SUM(amount) AS revenue
+FROM payments GROUP BY country
+ORDER BY revenue DESC LIMIT 10;
+
+-- AOV (average order value)
+SELECT AVG(amount) AS aov FROM orders WHERE status = 'completed';
+```
+
+### Errores comunes
+
+- **Olvidar columnas en GROUP BY** — error de SQL estándar.
+- **`COUNT(col)` cuando querías `COUNT(*)`**: si `col` tiene NULLs,
+  cuentas menos.
+- **División entera** sin cast: `COUNT(x)/COUNT(*)` sale 0 en motores
+  con división entera. Multiplica por `1.0` o castea.
+- **Filtrar agregaciones en `WHERE`** — usa `HAVING`.
+- **`AVG` sobre datasets con outliers**: una venta de $100k te tira el
+  promedio. Considera `MEDIAN` (o `PERCENTILE_CONT`) para datos asimétricos.
+- **`COUNT(DISTINCT)` sobre tablas enormes**: muy caro. Para
+  aproximaciones rápidas, motores modernos tienen `APPROX_COUNT_DISTINCT`
+  (HyperLogLog).
+
+### Para seguir aprendiendo
+
+- [Mode SQL — aggregate functions](https://mode.com/sql-tutorial/sql-aggregate-functions/)
+- [Postgres docs — aggregate functions](https://www.postgresql.org/docs/current/functions-aggregate.html)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-aggregations-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Cuál es la diferencia entre WHERE y HAVING?',
+      options: [
+        'Son sinónimos',
+        'WHERE filtra filas antes de agrupar; HAVING filtra grupos después de agregar',
+        'HAVING es para JOINs; WHERE no',
+        'WHERE no soporta AND',
+      ],
+      correctIndex: 1,
+      explanation: 'WHERE → fila por fila antes del GROUP BY; HAVING → sobre los grupos resultantes.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '¿Qué cuenta `COUNT(col)`?',
+      options: [
+        'Filas totales',
+        'Filas donde col no es NULL',
+        'Valores únicos de col',
+        'Bytes de col',
+      ],
+      correctIndex: 1,
+      explanation: 'COUNT(col) ignora NULLs en col. Para contar todas las filas: COUNT(*).',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: '`COUNT(DISTINCT col)` cuenta valores distintos no nulos.',
+      correct: true,
+      explanation: 'Deduplica y excluye NULL.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Filtra grupos con más de 100 órdenes.',
+      template: 'SELECT country, COUNT(*) FROM payments GROUP BY country ___ COUNT(*) > 100;',
+      answer: 'HAVING',
+      caseSensitive: false,
+      explanation: 'HAVING filtra después del GROUP BY.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Quieres "tasa de éxito por día". ¿Por qué `COUNT(success)/COUNT(*)` puede dar 0?',
+      options: [
+        'COUNT siempre da 0',
+        'División entera: si el resultado es <1, redondea a 0',
+        'GROUP BY no soporta división',
+        'Es un bug del motor',
+      ],
+      correctIndex: 1,
+      explanation: 'En motores con división entera, hay que multiplicar por 1.0 o castear a decimal.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="sql-aggregations-exercise"
+  title="GROUP BY en JS"
+  description="Implementa `groupBy(rows, key, aggregator)` que agrupa rows por la columna `key` y aplica `aggregator` (función) a cada grupo. Devuelve un array de { key, value }."
+  language="javascript"
+  starterCode={`function groupBy(rows, key, aggregator) {
+  const buckets = {};
+  // Tu código aquí
+  return [];
+}
+
+const data = [
+  {country:'CO', amount:10},
+  {country:'CO', amount:20},
+  {country:'MX', amount:15},
+];
+const result = groupBy(data, 'country', (rows) => rows.reduce((s,r)=>s+r.amount,0));
+console.log(result); // [{country:'CO', value:30}, {country:'MX', value:15}]`}
+  solution={`function groupBy(rows, key, aggregator) {
+  const buckets = {};
+  for (const r of rows) {
+    const k = r[key];
+    if (!buckets[k]) buckets[k] = [];
+    buckets[k].push(r);
+  }
+  return Object.entries(buckets).map(([k, group]) => ({
+    [key]: k,
+    value: aggregator(group),
+  }));
+}
+const data = [
+  {country:'CO', amount:10},
+  {country:'CO', amount:20},
+  {country:'MX', amount:15},
+];
+const result = groupBy(data, 'country', (rows) => rows.reduce((s,r)=>s+r.amount,0));
+console.log(result);`}
+  hints={[
+    'Usa un objeto como diccionario: {country: [rows]}.',
+    'Después convierte a array con Object.entries.map.',
+    'aggregator recibe el array de filas del grupo.',
+  ]}
+  tests={[
+    {
+      description: 'suma por grupo',
+      assert: 'groupBy([{c:"a",v:1},{c:"a",v:2}],"c",rs=>rs.reduce((s,r)=>s+r.v,0))[0].value === 3',
+    },
+    {
+      description: 'cuenta por grupo',
+      assert: 'groupBy([{c:"a"},{c:"a"},{c:"b"}],"c",rs=>rs.length).length === 2',
+    },
+    {
+      description: 'array vacío -> sin grupos',
+      assert: 'groupBy([],"c",rs=>rs.length).length === 0',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **subqueries** — queries dentro de queries para
+descomponer problemas complejos.

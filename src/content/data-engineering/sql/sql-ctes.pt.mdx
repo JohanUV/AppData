@@ -1,0 +1,245 @@
+## CTEs (WITH)
+
+Uma **CTE** (Common Table Expression) é uma query nomeada que vive
+dentro da consulta principal. Sintaxe: a cláusula `WITH`. Faz o mesmo
+que uma subquery em `FROM`, mas cem vezes mais legível com vários passos.
+
+Suportada em Postgres, BigQuery, Snowflake, Redshift, SQL Server e MySQL
+≥ 8.
+
+### Sintaxe básica
+
+```sql
+WITH paid_orders AS (
+  SELECT * FROM orders WHERE status = 'paid'
+)
+SELECT user_id, COUNT(*) AS n
+FROM paid_orders
+GROUP BY user_id;
+```
+
+`paid_orders` é como uma "tabela temporária" que existe só durante a
+query.
+
+### Encadear CTEs
+
+```sql
+WITH paid_orders AS (
+  SELECT * FROM orders WHERE status = 'paid'
+),
+user_revenue AS (
+  SELECT user_id, SUM(amount) AS revenue
+  FROM paid_orders GROUP BY user_id
+),
+top_users AS (
+  SELECT user_id FROM user_revenue ORDER BY revenue DESC LIMIT 10
+)
+SELECT u.id, u.name, ur.revenue
+FROM top_users tu
+INNER JOIN users u ON u.id = tu.user_id
+INNER JOIN user_revenue ur ON ur.user_id = tu.user_id
+ORDER BY ur.revenue DESC;
+```
+
+Cada CTE constrói sobre as anteriores.
+
+### CTE vs subquery
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[Subquery simples<br/>de uma linha] -->|inline legível| B[Subquery]
+  C[Vários passos<br/>ou reuso] -->|nomeada| D[CTE]`}
+</Diagram>
+
+### Materialização: cuidado em Postgres
+
+Postgres < 12 sempre materializa; ≥ 12 inlinea. Para forçar:
+
+```sql
+WITH paid_orders AS MATERIALIZED (...)
+WITH paid_orders AS NOT MATERIALIZED (...)
+```
+
+### CTEs recursivas
+
+<AnnotatedCode
+  language="sql"
+  filename="recursive-cte.sql"
+  annotations={[
+    {
+      match: 'WITH RECURSIVE',
+      title: 'Palavra-chave',
+      body: 'Marca a CTE como recursiva.',
+    },
+    {
+      match: 'SELECT 1, 1',
+      title: 'Caso base',
+      body: 'A "âncora": linhas iniciais.',
+    },
+    {
+      match: 'UNION ALL',
+      title: 'Combina âncora + recursão',
+      body: 'Obrigatório. UNION (sem ALL) pode bloquear avanço.',
+    },
+    {
+      match: 'WHERE n < 10',
+      title: 'Condição de parada',
+      body: 'CRÍTICO: sem isso, recursão infinita.',
+    },
+  ]}
+>
+{`WITH RECURSIVE counter (day, value) AS (
+  SELECT 1, 1
+  UNION ALL
+  SELECT day + 1, value * 2
+  FROM counter
+  WHERE day < 10
+)
+SELECT * FROM counter;`}
+</AnnotatedCode>
+
+### Caso real: hierarquia de funcionários
+
+```sql
+WITH RECURSIVE org AS (
+  SELECT id, name, manager_id, 1 AS depth
+  FROM employees
+  WHERE manager_id IS NULL
+  UNION ALL
+  SELECT e.id, e.name, e.manager_id, o.depth + 1
+  FROM employees e
+  INNER JOIN org o ON e.manager_id = o.id
+)
+SELECT * FROM org ORDER BY depth, name;
+```
+
+### Erros comuns
+
+- **CTE longa sem nome bom**.
+- **Recursiva sem condição de parada** ou com `UNION` em vez de `UNION
+  ALL`.
+- **Esperar que CTE acelere**.
+- **Confiar que CTE persiste** — não é vista nem tabela temporária.
+
+### Para continuar aprendendo
+
+- [Postgres docs — WITH Queries](https://www.postgresql.org/docs/current/queries-with.html)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-ctes-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'O que é uma CTE?',
+      options: [
+        'Tabela persistente',
+        'Query nomeada que vive só durante a consulta',
+        'Vista materializada',
+        'Tipo de índice',
+      ],
+      correctIndex: 1,
+      explanation: 'Existe só durante a query.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'CTEs podem encadear: uma CTE pode referenciar outra anterior no mesmo WITH.',
+      correct: true,
+      explanation: 'Permite decomposição em passos legíveis.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'O que CTE recursiva exige?',
+      options: [
+        'Só RECURSIVE',
+        'Caso base + recursivo unidos com UNION ALL + condição de parada',
+        'Subquery dentro',
+        'Trigger',
+      ],
+      correctIndex: 1,
+      explanation: 'Sem stop, infinito; UNION sem ALL pode não avançar.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Sintaxe para iniciar CTE.',
+      template: '___ paid_orders AS (SELECT * FROM orders WHERE status = \\\'paid\\\') SELECT ...',
+      answer: 'WITH',
+      caseSensitive: false,
+      explanation: 'WITH inicia uma ou mais CTEs.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Quando preferir CTE sobre subquery?',
+      options: [
+        'Query de uma linha',
+        'Vários passos ou bloco reutilizado',
+        'Só MySQL',
+        'Quando faz JOINs',
+      ],
+      correctIndex: 1,
+      explanation: 'CTE brilha em queries com múltiplos passos nomeáveis.',
+    },
+  ]}
+/>
+
+---
+
+## Exercício prático
+
+<Exercise
+  id="sql-ctes-exercise"
+  title="Pipeline de transformações"
+  description="Implemente `pipeline(rows, steps)`."
+  language="javascript"
+  starterCode={`function pipeline(rows, steps) {
+  return rows;
+}
+
+const data = [{x:1},{x:2},{x:3}];
+console.log(pipeline(data, [
+  rs => rs.map(r => ({...r, doubled: r.x * 2})),
+  rs => rs.filter(r => r.doubled >= 4),
+  rs => rs.map(r => r.doubled),
+]));`}
+  solution={`function pipeline(rows, steps) {
+  return steps.reduce((acc, fn) => fn(acc), rows);
+}
+const data = [{x:1},{x:2},{x:3}];
+console.log(pipeline(data, [
+  rs => rs.map(r => ({...r, doubled: r.x * 2})),
+  rs => rs.filter(r => r.doubled >= 4),
+  rs => rs.map(r => r.doubled),
+]));`}
+  hints={[
+    'reduce: acc = fn(acc).',
+    'Cada step recebe o que o anterior retornou.',
+  ]}
+  tests={[
+    {
+      description: 'pipeline vazio preserva',
+      assert: 'JSON.stringify(pipeline([1,2,3],[])) === "[1,2,3]"',
+    },
+    {
+      description: 'um step funciona',
+      assert: 'JSON.stringify(pipeline([1,2],[xs=>xs.map(x=>x*2)])) === "[2,4]"',
+    },
+    {
+      description: 'três steps encadeiam',
+      assert: 'pipeline([1,2,3,4],[xs=>xs.filter(x=>x%2===0),xs=>xs.map(x=>x*10),xs=>xs.reduce((s,x)=>s+x,0)]) === 60',
+    },
+  ]}
+/>
+
+---
+
+Próxima lição: **window functions parte 1**.

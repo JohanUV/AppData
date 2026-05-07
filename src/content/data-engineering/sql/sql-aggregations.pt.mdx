@@ -1,0 +1,257 @@
+## Agregações e GROUP BY
+
+Agregações convertem milhões de linhas em métricas resumidas. `GROUP BY`
+torna isso possível.
+
+### Funções básicas
+
+```sql
+SELECT
+  COUNT(*) AS rows_count,
+  COUNT(DISTINCT user_id) AS unique_users,
+  SUM(amount) AS total_revenue,
+  AVG(amount) AS avg_ticket,
+  MIN(amount) AS smallest_sale,
+  MAX(amount) AS biggest_sale
+FROM payments
+WHERE status = 'paid';
+```
+
+`COUNT(*)` conta linhas; `COUNT(col)` conta onde col não é NULL;
+`COUNT(DISTINCT col)` conta valores únicos não-nulos. Confunda e o
+relatório quebra.
+
+### GROUP BY
+
+```sql
+SELECT country, COUNT(*) AS orders, SUM(amount) AS revenue
+FROM payments GROUP BY country;
+```
+
+Colunas adicionais no SELECT precisam estar no GROUP BY (ou ser
+agregações):
+
+```sql
+-- FALHA:
+SELECT country, city, COUNT(*) FROM payments GROUP BY country;
+-- OK:
+SELECT country, city, COUNT(*) FROM payments GROUP BY country, city;
+```
+
+### Ordem lógica revisada
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[FROM] --> B[WHERE] --> C[GROUP BY] --> D[HAVING] --> E[SELECT] --> F[ORDER BY] --> G[LIMIT]`}
+</Diagram>
+
+`WHERE` filtra antes de agrupar; `HAVING` filtra depois.
+
+```sql
+SELECT country, COUNT(*) AS n
+FROM payments
+WHERE status = 'paid'
+GROUP BY country
+HAVING COUNT(*) > 100;
+```
+
+### Múltiplos níveis
+
+```sql
+SELECT
+  date_trunc('month', created_at) AS month,
+  country,
+  COUNT(*), SUM(amount), AVG(amount)
+FROM payments
+WHERE status = 'paid'
+GROUP BY 1, 2
+ORDER BY 1 DESC;
+```
+
+### Agregação condicional
+
+<AnnotatedCode
+  language="sql"
+  filename="conditional-agg.sql"
+  annotations={[
+    {
+      match: "SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END)",
+      title: 'SUM condicional',
+      body: 'Soma só quando a condição se cumpre.',
+    },
+    {
+      match: 'COUNT(*) FILTER',
+      title: 'Sintaxe FILTER (Postgres)',
+      body: 'Mais legível que CASE WHEN. Padrão SQL mas MySQL não implementa.',
+    },
+    {
+      match: '1.0 *',
+      title: 'Cast para decimal',
+      body: 'Sem 1.0, COUNT/COUNT é divisão inteira (sempre 0 ou 1).',
+    },
+  ]}
+>
+{`SELECT
+  date_trunc('day', created_at) AS day,
+  COUNT(*) AS attempts,
+  COUNT(*) FILTER (WHERE status = 'paid') AS successes,
+  SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END) AS revenue,
+  1.0 * COUNT(*) FILTER (WHERE status = 'paid') / COUNT(*) AS success_rate
+FROM payments
+WHERE created_at >= current_date - 30
+GROUP BY 1
+ORDER BY 1;`}
+</AnnotatedCode>
+
+### Métricas comuns
+
+```sql
+-- DAU
+SELECT date_trunc('day', event_at), COUNT(DISTINCT user_id)
+FROM events GROUP BY 1;
+
+-- AOV
+SELECT AVG(amount) FROM orders WHERE status = 'completed';
+```
+
+### Erros comuns
+
+- **Esquecer colunas no GROUP BY**.
+- **`COUNT(col)` quando queria `COUNT(*)`** — NULLs reduzem.
+- **Divisão inteira** sem cast.
+- **Filtrar agregações em `WHERE`** — use `HAVING`.
+- **`AVG` com outliers**: considere mediana.
+- **`COUNT(DISTINCT)` em tabelas enormes**: caro. `APPROX_COUNT_DISTINCT`
+  para aproximação.
+
+### Para continuar aprendendo
+
+- [Mode SQL — aggregate functions](https://mode.com/sql-tutorial/sql-aggregate-functions/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-aggregations-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Diferença entre WHERE e HAVING?',
+      options: [
+        'São sinônimos',
+        'WHERE filtra linhas antes de agrupar; HAVING filtra grupos depois',
+        'HAVING é para JOINs',
+        'WHERE não suporta AND',
+      ],
+      correctIndex: 1,
+      explanation: 'WHERE → linha a linha antes do GROUP BY; HAVING → sobre grupos resultantes.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'O que `COUNT(col)` conta?',
+      options: [
+        'Linhas totais',
+        'Linhas onde col não é NULL',
+        'Valores únicos',
+        'Bytes de col',
+      ],
+      correctIndex: 1,
+      explanation: 'COUNT(col) ignora NULLs. Para todas: COUNT(*).',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: '`COUNT(DISTINCT col)` conta valores distintos não-nulos.',
+      correct: true,
+      explanation: 'Deduplica e exclui NULL.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Filtra grupos com mais de 100 orders.',
+      template: 'SELECT country, COUNT(*) FROM payments GROUP BY country ___ COUNT(*) > 100;',
+      answer: 'HAVING',
+      caseSensitive: false,
+      explanation: 'HAVING filtra após GROUP BY.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Por que `COUNT(success)/COUNT(*)` pode dar 0?',
+      options: [
+        'COUNT sempre dá 0',
+        'Divisão inteira: resultado <1 arredonda para 0',
+        'GROUP BY não suporta divisão',
+        'Bug do motor',
+      ],
+      correctIndex: 1,
+      explanation: 'Multiplique por 1.0 ou cast.',
+    },
+  ]}
+/>
+
+---
+
+## Exercício prático
+
+<Exercise
+  id="sql-aggregations-exercise"
+  title="GROUP BY em JS"
+  description="Implemente `groupBy(rows, key, aggregator)`."
+  language="javascript"
+  starterCode={`function groupBy(rows, key, aggregator) {
+  return [];
+}
+
+const data = [
+  {country:'CO', amount:10},
+  {country:'CO', amount:20},
+  {country:'MX', amount:15},
+];
+console.log(groupBy(data, 'country', (rs) => rs.reduce((s,r)=>s+r.amount,0)));`}
+  solution={`function groupBy(rows, key, aggregator) {
+  const buckets = {};
+  for (const r of rows) {
+    const k = r[key];
+    if (!buckets[k]) buckets[k] = [];
+    buckets[k].push(r);
+  }
+  return Object.entries(buckets).map(([k, group]) => ({
+    [key]: k,
+    value: aggregator(group),
+  }));
+}
+const data = [
+  {country:'CO', amount:10},
+  {country:'CO', amount:20},
+  {country:'MX', amount:15},
+];
+console.log(groupBy(data, 'country', (rs) => rs.reduce((s,r)=>s+r.amount,0)));`}
+  hints={[
+    'Use objeto como dicionário.',
+    'Object.entries.map para converter no final.',
+  ]}
+  tests={[
+    {
+      description: 'soma por grupo',
+      assert: 'groupBy([{c:"a",v:1},{c:"a",v:2}],"c",rs=>rs.reduce((s,r)=>s+r.v,0))[0].value === 3',
+    },
+    {
+      description: 'conta por grupo',
+      assert: 'groupBy([{c:"a"},{c:"a"},{c:"b"}],"c",rs=>rs.length).length === 2',
+    },
+    {
+      description: 'array vazio',
+      assert: 'groupBy([],"c",rs=>rs.length).length === 0',
+    },
+  ]}
+/>
+
+---
+
+Próxima lição: **subqueries**.

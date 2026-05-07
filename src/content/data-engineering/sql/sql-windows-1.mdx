@@ -1,0 +1,314 @@
+## Window functions I: ROW_NUMBER, RANK
+
+Las **window functions** son la diferencia entre escribir SQL "básico" y
+SQL "profesional". Te permiten hacer cálculos a través de un conjunto de
+filas relacionadas con la fila actual, sin colapsar el resultado como
+hace `GROUP BY`. Esta lección cubre las de ranking; la siguiente cubre
+LAG/LEAD/SUM OVER.
+
+### El problema que resuelven
+
+Quieres "el top 3 de productos más vendidos por categoría". Sin window
+functions, eso requiere subqueries con JOINs raros. Con ROW_NUMBER, son
+4 líneas:
+
+```sql
+WITH ranked AS (
+  SELECT
+    category,
+    product_name,
+    units_sold,
+    ROW_NUMBER() OVER (PARTITION BY category ORDER BY units_sold DESC) AS rn
+  FROM product_sales
+)
+SELECT category, product_name, units_sold
+FROM ranked
+WHERE rn <= 3;
+```
+
+### Anatomía de una window function
+
+```sql
+FUNCION() OVER (
+  PARTITION BY <col>     -- divide en grupos (opcional)
+  ORDER BY <col>         -- ordena dentro del grupo
+  -- ROWS BETWEEN ...    -- frame (avanzado, lección siguiente)
+)
+```
+
+- **PARTITION BY**: divide las filas en grupos. La función se aplica
+  separadamente en cada grupo. Sin `PARTITION BY`, todo el resultado es
+  un grupo.
+- **ORDER BY**: orden dentro del grupo (importa para ROW_NUMBER, RANK,
+  LAG, LEAD).
+
+A diferencia de `GROUP BY`, NO colapsa filas. Cada fila original
+permanece, y se agrega la columna calculada.
+
+### ROW_NUMBER, RANK, DENSE_RANK
+
+Las tres asignan un número de orden a cada fila dentro del grupo, pero
+manejan empates de forma distinta:
+
+<AnnotatedCode
+  language="sql"
+  filename="ranking.sql"
+  annotations={[
+    {
+      match: 'ROW_NUMBER()',
+      title: 'Sin empates',
+      body: 'Asigna 1, 2, 3, 4... sin importar empates en ORDER BY. Si dos filas tienen el mismo valor, el desempate es arbitrario.',
+    },
+    {
+      match: 'RANK()',
+      title: 'Con saltos',
+      body: 'Empates reciben el mismo número, pero deja huecos: 1, 2, 2, 4. La fila 4 está después del empate.',
+    },
+    {
+      match: 'DENSE_RANK()',
+      title: 'Sin huecos',
+      body: 'Empates reciben el mismo número, sin saltarse: 1, 2, 2, 3.',
+    },
+  ]}
+>
+{`SELECT
+  user_id,
+  amount,
+  ROW_NUMBER() OVER (ORDER BY amount DESC) AS rn,
+  RANK() OVER (ORDER BY amount DESC) AS rk,
+  DENSE_RANK() OVER (ORDER BY amount DESC) AS drk
+FROM payments;`}
+</AnnotatedCode>
+
+Con datos de ejemplo:
+
+```
+amount | rn | rk | drk
+100    | 1  | 1  | 1
+80     | 2  | 2  | 2
+80     | 3  | 2  | 2
+70     | 4  | 4  | 3
+```
+
+¿Cuál usar?
+
+- **ROW_NUMBER**: cuando necesitas un identificador único secuencial.
+  Para "1ª compra del usuario", "5ª impresión por sesión".
+- **RANK**: para ranking deportivo clásico (1er, 2º, 2º, 4º).
+- **DENSE_RANK**: cuando quieres niveles compactos sin huecos.
+
+### Top N por grupo: el patrón estrella
+
+Es probablemente el uso más común:
+
+```sql
+-- Top 3 productos por categoría
+WITH ranked AS (
+  SELECT
+    category,
+    product_name,
+    units_sold,
+    ROW_NUMBER() OVER (PARTITION BY category ORDER BY units_sold DESC) AS rn
+  FROM product_sales
+)
+SELECT category, product_name, units_sold
+FROM ranked
+WHERE rn <= 3;
+```
+
+Sin window functions, esto requiere subqueries correlacionadas pesadas.
+Con ROW_NUMBER es elegante.
+
+### NTILE: dividir en deciles, cuartiles, etc.
+
+`NTILE(n)` reparte las filas en `n` cubetas del mismo tamaño:
+
+```sql
+SELECT
+  user_id,
+  total_spent,
+  NTILE(4) OVER (ORDER BY total_spent DESC) AS quartile
+FROM user_revenue;
+```
+
+Resultado: cuartil 1 son los top 25% de gastadores, cuartil 4 los
+inferiores. Útil para segmentación.
+
+### Diferencia clave con GROUP BY
+
+```sql
+-- GROUP BY: colapsa
+SELECT category, AVG(price) FROM products GROUP BY category;
+-- 3 filas (una por categoría)
+
+-- Window: preserva filas + agrega columna
+SELECT
+  category,
+  product_name,
+  price,
+  AVG(price) OVER (PARTITION BY category) AS category_avg
+FROM products;
+-- N filas (todos los productos), cada uno con el avg de su categoría al lado
+```
+
+Con window function puedes comparar cada fila vs su grupo:
+
+```sql
+SELECT
+  product_name,
+  price,
+  AVG(price) OVER (PARTITION BY category) AS category_avg,
+  price - AVG(price) OVER (PARTITION BY category) AS deviation
+FROM products;
+```
+
+### PARTITION BY sin ORDER BY
+
+```sql
+SELECT
+  user_id,
+  amount,
+  COUNT(*) OVER (PARTITION BY user_id) AS user_orders_count,
+  SUM(amount) OVER (PARTITION BY user_id) AS user_total_spent
+FROM payments;
+```
+
+Sin `ORDER BY` dentro del OVER, el cálculo se aplica a todas las filas
+del grupo: cada fila ve la suma total del usuario, no acumulada.
+
+### Errores comunes
+
+- **Confundir `WHERE` con filtro sobre window**. No puedes hacer `WHERE ROW_NUMBER() OVER (...) <= 3` directamente. Tienes que envolver en CTE o subquery.
+- **Olvidar `PARTITION BY`** y obtener un ranking global cuando querías
+  por grupo.
+- **`ROW_NUMBER` esperando consistencia con empates**. Si quieres que
+  empates reciban el mismo rn, necesitas `RANK` o `DENSE_RANK`.
+- **`ORDER BY` en OVER mal interpretado**. Es el orden interno del cálculo
+  de la window, no el orden del resultado final (eso es `ORDER BY` de
+  fuera).
+
+### Para seguir aprendiendo
+
+- [Postgres docs — Window Functions](https://www.postgresql.org/docs/current/tutorial-window.html)
+- [Mode — Window Functions](https://mode.com/sql-tutorial/sql-window-functions/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-windows-1-quiz"
+  xpReward={80}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Diferencia clave entre window function y GROUP BY:',
+      options: [
+        'Sólo cambia la sintaxis',
+        'GROUP BY colapsa filas; window function preserva todas las filas',
+        'Window functions son más lentas',
+        'GROUP BY es deprecado',
+      ],
+      correctIndex: 1,
+      explanation: 'Window function añade columna calculada sin reducir el número de filas.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'En empates, RANK produce 1,2,2,4. ¿Qué produce DENSE_RANK?',
+      options: ['1,2,2,4', '1,2,2,3', '1,2,3,4', '1,1,2,3'],
+      correctIndex: 1,
+      explanation: 'DENSE_RANK no deja huecos.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Puedes usar `WHERE ROW_NUMBER() OVER (...) <= 3` directamente en una query.',
+      correct: false,
+      explanation: 'Window functions no pueden referenciarse en WHERE; envuelve en CTE o subquery.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Top 1 venta por usuario.',
+      template: 'ROW_NUMBER() OVER (___ user_id ORDER BY amount DESC) AS rn',
+      answer: 'PARTITION BY',
+      caseSensitive: false,
+      explanation: 'PARTITION BY user_id divide en grupos por usuario.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Quieres "los 25% top gastadores". ¿Qué función usar?',
+      options: ['ROW_NUMBER', 'RANK', 'NTILE(4) y filtrar quartile=1', 'COUNT'],
+      correctIndex: 2,
+      explanation: 'NTILE divide en n cubetas del mismo tamaño; filtras la 1.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="sql-windows-1-exercise"
+  title="ROW_NUMBER en JS"
+  description="Implementa `rowNumber(rows, partitionKey, orderKey)` que devuelve los rows con una propiedad `rn` que es el row_number dentro de cada partición ordenada por orderKey desc."
+  language="javascript"
+  starterCode={`function rowNumber(rows, partitionKey, orderKey) {
+  return rows;
+}
+
+const data = [
+  {cat:'A',v:30},{cat:'A',v:10},{cat:'A',v:20},
+  {cat:'B',v:5},{cat:'B',v:15},
+];
+console.log(rowNumber(data, 'cat', 'v'));`}
+  solution={`function rowNumber(rows, partitionKey, orderKey) {
+  // Agrupa por partitionKey
+  const groups = {};
+  for (const r of rows) {
+    const k = r[partitionKey];
+    (groups[k] ||= []).push(r);
+  }
+  // Ordena dentro de cada grupo desc y asigna rn
+  const out = [];
+  for (const arr of Object.values(groups)) {
+    arr.sort((a, b) => b[orderKey] - a[orderKey]);
+    arr.forEach((r, i) => out.push({ ...r, rn: i + 1 }));
+  }
+  return out;
+}
+const data = [
+  {cat:'A',v:30},{cat:'A',v:10},{cat:'A',v:20},
+  {cat:'B',v:5},{cat:'B',v:15},
+];
+console.log(rowNumber(data, 'cat', 'v'));`}
+  hints={[
+    'Agrupa primero, ordena cada grupo, luego asigna rn.',
+    'Sort en orden descendente: (a,b) => b.v - a.v.',
+    'forEach con índice te da el rn (i+1).',
+  ]}
+  tests={[
+    {
+      description: 'asigna rn correctamente',
+      assert: 'rowNumber([{c:"a",v:1},{c:"a",v:2}],"c","v").find(r=>r.v===2).rn === 1',
+    },
+    {
+      description: 'reinicia rn por partición',
+      assert: 'rowNumber([{c:"a",v:5},{c:"b",v:1}],"c","v").every(r=>r.rn===1)',
+    },
+    {
+      description: 'preserva número de filas',
+      assert: 'rowNumber([{c:"a",v:1},{c:"a",v:2},{c:"b",v:3}],"c","v").length === 3',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **window functions II** — LAG, LEAD y agregaciones
+ventana móvil para series de tiempo.

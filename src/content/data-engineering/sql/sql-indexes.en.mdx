@@ -1,0 +1,305 @@
+## Indexes and performance
+
+Your query works in dev with 1,000 rows. It hits production and dies on
+10 million. The reason is almost always the same: **missing index** or
+poorly used one. This lesson covers what indexes are, when to create them,
+when NOT to, and how to read an execution plan.
+
+### What an index is
+
+An index is an **auxiliary data structure** the engine maintains to speed
+up lookups. Classic analogy: the alphabetical index at the end of a book
+takes you to the page without reading the whole thing.
+
+Without an index, a query like:
+
+```sql
+SELECT * FROM users WHERE email = 'ana@x.com';
+```
+
+does a **full table scan**: reads all rows and compares email. With 10M
+rows, 10M comparisons.
+
+With an index on `email`:
+
+```sql
+CREATE INDEX idx_users_email ON users(email);
+```
+
+the engine queries a B-tree and finds the row in ~log(10M) ≈ 24
+comparisons. Difference between 5 seconds and 0.5 ms.
+
+### Common index types
+
+- **B-tree** (default). Equality, range queries, `ORDER BY`, `LIKE
+  'foo%'`.
+- **Hash**. Equality only, very fast. Niche.
+- **GIN / GiST** (Postgres). Full-text search, JSON, arrays.
+- **Bitmap** (Oracle, columnar). Low cardinality.
+- **Columnstore** (BigQuery, Redshift, Snowflake). No traditional
+  indexes — columnar warehouses optimize per column automatically.
+
+In OLTP (Postgres, MySQL) you work with B-trees. In analytics (BigQuery,
+Snowflake) concepts shift to **clustering** and **partitioning**.
+
+### When to create an index
+
+<Diagram type="mermaid">
+{`flowchart TD
+  A[Slow query] --> B{Filters/joins<br/>on a column?}
+  B -->|Yes| C{High cardinality?}
+  C -->|Yes| D[Index probably useful]
+  C -->|No| E[Bitmap or skip]
+  B -->|No| F[Different problem:<br/>full scan needed]`}
+</Diagram>
+
+**Good candidates:**
+
+- Foreign keys (`user_id`, `order_id`).
+- Highly filtered columns (`email`, `created_at`).
+- Columns in `ORDER BY` with `LIMIT`.
+- Unique columns (`UNIQUE INDEX`).
+
+**Bad candidates:**
+
+- Very low cardinality (`is_active`, `gender`).
+- Heavily updated columns: every UPDATE/INSERT updates the index.
+- Rarely filtered columns.
+
+### Compound indexes
+
+```sql
+-- For queries with WHERE country = X AND created_at > Y
+CREATE INDEX idx_users_country_created
+ON users(country, created_at);
+```
+
+**Order matters.** Used by:
+
+```sql
+WHERE country = 'CO' AND created_at > '2026-01-01';
+WHERE country = 'CO';                                    -- prefix
+WHERE country = 'CO' ORDER BY created_at DESC;           -- prefix + sort
+```
+
+NOT used by:
+
+```sql
+WHERE created_at > '2026-01-01';   -- doesn't start with country
+```
+
+Rule: compound index is used left-to-right.
+
+### EXPLAIN: your best friend
+
+`EXPLAIN` shows the execution plan without running. `EXPLAIN ANALYZE`
+runs and reports real timings.
+
+<AnnotatedCode
+  language="sql"
+  filename="explain.sql"
+  annotations={[
+    {
+      match: 'EXPLAIN ANALYZE',
+      title: 'Plan + actual run',
+      body: 'EXPLAIN shows estimate; ANALYZE runs the query and reports timings. Be careful with destructive queries: ANALYZE actually executes them.',
+    },
+    {
+      match: 'Seq Scan',
+      title: 'Bad sign',
+      body: 'Sequential Scan = full table scan. Acceptable on small tables or when reading nearly everything. On large tables with selective WHERE, it is the cause.',
+    },
+    {
+      match: 'Index Scan',
+      title: 'Good sign',
+      body: 'The engine found a suitable index. Verify "Index Cond" matches your WHERE.',
+    },
+    {
+      match: 'cost=',
+      title: 'Optimizer estimate',
+      body: 'Arbitrary cost (not seconds). Compares alternative plans. Lower = better.',
+    },
+  ]}
+>
+{`EXPLAIN ANALYZE
+SELECT * FROM users WHERE email = 'ana@x.com';
+
+-- Sample output (Postgres):
+-- Index Scan using idx_users_email on users (cost=0.43..8.45 rows=1 width=...)
+--   Index Cond: (email = 'ana@x.com')
+-- Planning Time: 0.123 ms
+-- Execution Time: 0.045 ms`}
+</AnnotatedCode>
+
+### Index cost
+
+Indexes aren't free:
+
+- **Disk space**: each one takes 10-30% of the table size.
+- **Writes**: every INSERT/UPDATE/DELETE updates relevant indexes.
+- **Maintenance**: VACUUM, REINDEX in Postgres.
+
+Rule of thumb: **less is more**. Start with FK + unique columns. Add more
+only if EXPLAIN shows Seq Scan on real slow queries.
+
+### Things that invalidate an index
+
+```sql
+-- ❌ Function over column
+WHERE LOWER(email) = 'ana@x.com'
+-- ✓ Functional index or normalize on save
+CREATE INDEX idx_users_email_lower ON users(LOWER(email));
+
+-- ❌ Leading wildcard
+WHERE email LIKE '%@gmail.com'
+-- ✓ Trailing wildcard
+WHERE email LIKE 'ana@%'
+
+-- ❌ Implicit cast
+WHERE user_id = '123'   -- user_id is INTEGER
+-- ✓ Right type
+WHERE user_id = 123
+
+-- ❌ OR sometimes forces scan
+WHERE email = 'a' OR phone = 'b'
+-- ✓ UNION of two queries with respective indexes
+```
+
+### Common mistakes
+
+- **Indexing on hunches without EXPLAIN**.
+- **Over-indexing write-heavy tables**.
+- **Forgetting index on FKs**: JOINs by FK become slow.
+- **Using functions over columns** without functional index.
+- **Confusing UNIQUE INDEX with CONSTRAINT**: many engines use the same.
+- **Applying OLTP concepts to columnar warehouses**: BigQuery doesn't
+  use B-trees; partition + cluster.
+
+### Keep learning
+
+- [Use The Index, Luke!](https://use-the-index-luke.com/) — visual bible
+  of indexes, free.
+- [Postgres EXPLAIN docs](https://www.postgresql.org/docs/current/using-explain.html)
+- [explain.depesz.com](https://explain.depesz.com/) — paste your plan,
+  see it visualized.
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-indexes-quiz"
+  xpReward={80}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'A B-tree index is good for...',
+      options: [
+        'Equality and range filters',
+        'Equality only',
+        'Full-text search only',
+        'Tables with under 100 rows',
+      ],
+      correctIndex: 0,
+      explanation: 'B-tree handles =, <, >, BETWEEN, LIKE \'foo%\', ORDER BY.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'More indexes always improve performance.',
+      correct: false,
+      explanation: 'Each index slows writes. Start with few, add by evidence.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Why might `WHERE LOWER(email) = "x"` not use the email index?',
+      options: [
+        'LOWER is not standard SQL',
+        'The function transforms the column; the b-tree of email is unusable. Need functional index.',
+        'Only works on MySQL',
+        'Optimizer bug',
+      ],
+      correctIndex: 1,
+      explanation: 'Index the expression: CREATE INDEX ... ON users(LOWER(email)).',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Create a compound index on country and created_at.',
+      template: 'CREATE ___ idx_users_cc ON users(country, created_at);',
+      answer: 'INDEX',
+      caseSensitive: false,
+      explanation: 'CREATE INDEX name ON table(cols).',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'EXPLAIN shows "Seq Scan" on a query with WHERE. What does it mean?',
+      options: [
+        'Engine using secondary index',
+        'Reading the whole table — likely missing index or planner thinks it is fine',
+        'A bug',
+        'Query uses LIMIT',
+      ],
+      correctIndex: 1,
+      explanation: 'Seq Scan = full table scan. Bad on big tables with selective filter.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="sql-indexes-exercise"
+  title="Detect queries that invalidate indexes"
+  description="Given a WHERE clause as string, return true if it likely invalidates a regular index (function over column, LIKE with leading wildcard)."
+  language="javascript"
+  starterCode={`function invalidatesIndex(whereClause) {
+  return false;
+}
+
+console.log(invalidatesIndex("WHERE LOWER(email) = 'a'"));
+console.log(invalidatesIndex("WHERE email = 'a'"));
+console.log(invalidatesIndex("WHERE name LIKE '%foo%'"));
+console.log(invalidatesIndex("WHERE name LIKE 'foo%'"));`}
+  solution={`function invalidatesIndex(whereClause) {
+  if (/[A-Z]+\\([a-z_]+\\)\\s*=/i.test(whereClause)) return true;
+  if (/LIKE\\s+'%/i.test(whereClause)) return true;
+  return false;
+}
+console.log(invalidatesIndex("WHERE LOWER(email) = 'a'"));
+console.log(invalidatesIndex("WHERE email = 'a'"));
+console.log(invalidatesIndex("WHERE name LIKE '%foo%'"));
+console.log(invalidatesIndex("WHERE name LIKE 'foo%'"));`}
+  hints={[
+    'Regex /[A-Z]+\\([a-z_]+\\)/ detects functions on columns.',
+    'LIKE followed by % at start is a classic anti-pattern.',
+  ]}
+  tests={[
+    {
+      description: 'function over column',
+      assert: 'invalidatesIndex("WHERE LOWER(email) = \\\'a\\\'") === true',
+    },
+    {
+      description: 'simple equality',
+      assert: 'invalidatesIndex("WHERE email = \\\'a\\\'") === false',
+    },
+    {
+      description: 'LIKE with leading wildcard',
+      assert: 'invalidatesIndex("WHERE name LIKE \\\'%foo%\\\'") === true',
+    },
+    {
+      description: 'LIKE with trailing wildcard OK',
+      assert: 'invalidatesIndex("WHERE name LIKE \\\'foo%\\\'") === false',
+    },
+  ]}
+/>
+
+---
+
+Next, the last lesson: **query optimization**.

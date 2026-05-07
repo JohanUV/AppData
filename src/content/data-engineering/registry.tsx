@@ -42,6 +42,38 @@ import GitBpEs from './git/git-best-practices.mdx';
 import GitBpEn from './git/git-best-practices.en.mdx';
 import GitBpPt from './git/git-best-practices.pt.mdx';
 
+// Módulo sql
+import SqlSelectEs from './sql/sql-select-where-orderby.mdx';
+import SqlSelectEn from './sql/sql-select-where-orderby.en.mdx';
+import SqlSelectPt from './sql/sql-select-where-orderby.pt.mdx';
+import SqlJoinsEs from './sql/sql-joins-deep.mdx';
+import SqlJoinsEn from './sql/sql-joins-deep.en.mdx';
+import SqlJoinsPt from './sql/sql-joins-deep.pt.mdx';
+import SqlAggEs from './sql/sql-aggregations.mdx';
+import SqlAggEn from './sql/sql-aggregations.en.mdx';
+import SqlAggPt from './sql/sql-aggregations.pt.mdx';
+import SqlSubEs from './sql/sql-subqueries.mdx';
+import SqlSubEn from './sql/sql-subqueries.en.mdx';
+import SqlSubPt from './sql/sql-subqueries.pt.mdx';
+import SqlCtesEs from './sql/sql-ctes.mdx';
+import SqlCtesEn from './sql/sql-ctes.en.mdx';
+import SqlCtesPt from './sql/sql-ctes.pt.mdx';
+import SqlW1Es from './sql/sql-windows-1.mdx';
+import SqlW1En from './sql/sql-windows-1.en.mdx';
+import SqlW1Pt from './sql/sql-windows-1.pt.mdx';
+import SqlW2Es from './sql/sql-windows-2.mdx';
+import SqlW2En from './sql/sql-windows-2.en.mdx';
+import SqlW2Pt from './sql/sql-windows-2.pt.mdx';
+import SqlCaseEs from './sql/sql-case-when.mdx';
+import SqlCaseEn from './sql/sql-case-when.en.mdx';
+import SqlCasePt from './sql/sql-case-when.pt.mdx';
+import SqlIdxEs from './sql/sql-indexes.mdx';
+import SqlIdxEn from './sql/sql-indexes.en.mdx';
+import SqlIdxPt from './sql/sql-indexes.pt.mdx';
+import SqlOptEs from './sql/sql-query-optimization.mdx';
+import SqlOptEn from './sql/sql-query-optimization.en.mdx';
+import SqlOptPt from './sql/sql-query-optimization.pt.mdx';
+
 export interface LessonMeta {
   slug: string;
   module: string;
@@ -110,6 +142,56 @@ const realComponents: Record<string, Record<Locale, MDXContent>> = {
     es: GitBpEs as MDXContent,
     en: GitBpEn as MDXContent,
     pt: GitBpPt as MDXContent,
+  },
+  'sql-select-where-orderby': {
+    es: SqlSelectEs as MDXContent,
+    en: SqlSelectEn as MDXContent,
+    pt: SqlSelectPt as MDXContent,
+  },
+  'sql-joins-deep': {
+    es: SqlJoinsEs as MDXContent,
+    en: SqlJoinsEn as MDXContent,
+    pt: SqlJoinsPt as MDXContent,
+  },
+  'sql-aggregations': {
+    es: SqlAggEs as MDXContent,
+    en: SqlAggEn as MDXContent,
+    pt: SqlAggPt as MDXContent,
+  },
+  'sql-subqueries': {
+    es: SqlSubEs as MDXContent,
+    en: SqlSubEn as MDXContent,
+    pt: SqlSubPt as MDXContent,
+  },
+  'sql-ctes': {
+    es: SqlCtesEs as MDXContent,
+    en: SqlCtesEn as MDXContent,
+    pt: SqlCtesPt as MDXContent,
+  },
+  'sql-windows-1': {
+    es: SqlW1Es as MDXContent,
+    en: SqlW1En as MDXContent,
+    pt: SqlW1Pt as MDXContent,
+  },
+  'sql-windows-2': {
+    es: SqlW2Es as MDXContent,
+    en: SqlW2En as MDXContent,
+    pt: SqlW2Pt as MDXContent,
+  },
+  'sql-case-when': {
+    es: SqlCaseEs as MDXContent,
+    en: SqlCaseEn as MDXContent,
+    pt: SqlCasePt as MDXContent,
+  },
+  'sql-indexes': {
+    es: SqlIdxEs as MDXContent,
+    en: SqlIdxEn as MDXContent,
+    pt: SqlIdxPt as MDXContent,
+  },
+  'sql-query-optimization': {
+    es: SqlOptEs as MDXContent,
+    en: SqlOptEn as MDXContent,
+    pt: SqlOptPt as MDXContent,
   },
 };
 

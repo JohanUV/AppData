@@ -1,0 +1,299 @@
+## Repaso de SELECT, WHERE, ORDER BY
+
+SQL es la herramienta #1 del Data Engineer. Vas a leer SQL, escribir SQL,
+debugear SQL y revisar SQL ajeno todos los días. Antes de meternos en JOINs
+y window functions, conviene tener musculo bien afinado en lo básico:
+proyección (`SELECT`), filtrado (`WHERE`) y ordenamiento (`ORDER BY`). Estos
+tres comandos son el 60% de tus consultas reales.
+
+### El esqueleto de una query
+
+Toda consulta SQL básica sigue el mismo esqueleto:
+
+```sql
+SELECT <columnas>
+FROM <tabla>
+WHERE <filtros>
+ORDER BY <columnas>
+LIMIT <n>;
+```
+
+El orden de **escritura** es uno; el orden de **ejecución** es otro:
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[FROM] --> B[WHERE] --> C[SELECT] --> D[ORDER BY] --> E[LIMIT]`}
+</Diagram>
+
+Esto importa cuando un alias declarado en `SELECT` lo intentas usar en
+`WHERE` y te grita: el motor todavía no sabe que existe.
+
+### SELECT: la proyección
+
+`SELECT` decide **qué columnas** quieres ver. Lo más simple:
+
+```sql
+SELECT user_id, email, created_at
+FROM users;
+```
+
+Variantes:
+
+```sql
+-- Todas las columnas (cómodo, pero evita en producción)
+SELECT * FROM users;
+
+-- Renombrar columnas (alias)
+SELECT user_id AS id, created_at AS signup_date FROM users;
+
+-- Calcular columnas
+SELECT
+  user_id,
+  amount,
+  amount * 1.19 AS amount_with_tax
+FROM payments;
+
+-- Eliminar duplicados
+SELECT DISTINCT country FROM users;
+```
+
+<Callout type="warning" title="Evita SELECT *">
+  En queries productivos `SELECT *` te muerde: si alguien agrega una columna
+  pesada (BLOB, TEXT enorme) tu query se vuelve lenta sin que toques nada.
+  Sé explícito con las columnas que necesitas.
+</Callout>
+
+### WHERE: filtrado de filas
+
+`WHERE` filtra antes del agrupamiento. Operadores básicos:
+
+<AnnotatedCode
+  language="sql"
+  filename="filtros.sql"
+  annotations={[
+    {
+      match: "BETWEEN '2026-01-01' AND '2026-01-31'",
+      title: 'Rango inclusivo',
+      body: 'BETWEEN incluye los dos extremos. Equivale a created_at >= "2026-01-01" AND created_at <= "2026-01-31".',
+    },
+    {
+      match: "country IN ('CO', 'MX', 'AR')",
+      title: 'Pertenencia a conjunto',
+      body: 'IN evita escribir country = "CO" OR country = "MX"... Cuando el conjunto es grande, considera UNION o subquery.',
+    },
+    {
+      match: "email LIKE '%@gmail.com'",
+      title: 'Patrón con wildcards',
+      body: '% matchea cualquier número de caracteres; _ matchea exactamente uno. Sensible al motor: en Postgres es case-sensitive (usa ILIKE para insensitive).',
+    },
+    {
+      match: 'IS NOT NULL',
+      title: 'Nulos ≠ valores',
+      body: 'NULL no es comparable con = ni !=. SIEMPRE usa IS NULL / IS NOT NULL.',
+    },
+  ]}
+>
+{`SELECT user_id, email, country, signup_date
+FROM users
+WHERE
+  signup_date BETWEEN '2026-01-01' AND '2026-01-31'
+  AND country IN ('CO', 'MX', 'AR')
+  AND email LIKE '%@gmail.com'
+  AND deleted_at IS NOT NULL;`}
+</AnnotatedCode>
+
+### NULLs: el dolor de cabeza eterno
+
+Las comparaciones con `NULL` siempre devuelven `NULL`, no `true`/`false`:
+
+```sql
+-- ESTO NO FUNCIONA:
+SELECT * FROM users WHERE country = NULL;     -- 0 filas siempre
+SELECT * FROM users WHERE country != NULL;    -- 0 filas siempre
+
+-- USA ESTO:
+SELECT * FROM users WHERE country IS NULL;
+SELECT * FROM users WHERE country IS NOT NULL;
+```
+
+Esto es la causa #1 de queries que devuelven "menos filas de las
+esperadas". Si tu motor lo soporta, `IS DISTINCT FROM` es la versión
+"NULL-safe" de `!=`.
+
+### ORDER BY: ordenar resultados
+
+```sql
+SELECT user_id, signup_date
+FROM users
+ORDER BY signup_date DESC;       -- más recientes primero
+
+-- Por varias columnas
+ORDER BY country ASC, signup_date DESC;
+
+-- Por posición en el SELECT (rápido pero menos legible)
+ORDER BY 2 DESC;
+
+-- Manejar NULLs explícitamente
+ORDER BY signup_date DESC NULLS LAST;
+```
+
+`ASC` es el default — no hace falta escribirlo. Pero `DESC` casi siempre
+sí, porque típicamente quieres lo más reciente primero.
+
+### LIMIT: paginar resultados
+
+```sql
+SELECT user_id, signup_date
+FROM users
+ORDER BY signup_date DESC
+LIMIT 10;                        -- top 10 más recientes
+
+-- Saltar N (para paginación)
+LIMIT 10 OFFSET 20;               -- filas 21-30
+```
+
+Para datasets grandes, OFFSET es ineficiente (escanea desde el inicio
+cada vez). Profesionales usan **cursor pagination**: filtras por la última
+fila vista en lugar de saltar.
+
+### Errores comunes
+
+- **`WHERE col = NULL`**. Siempre 0 filas; usa `IS NULL`.
+- **`ORDER BY` sin `LIMIT`** sobre datasets enormes: ordena toda la tabla
+  para nada.
+- **Olvidar que el orden lógico difiere del orden de escritura**. Aliases
+  del SELECT no se pueden usar en WHERE.
+- **`LIKE '%foo%'`** sin índice: full table scan garantizado en cualquier
+  motor. Para búsquedas de texto, usa índices full-text.
+- **Comparar fechas como strings** (`WHERE date_col = '2026-1-1'`).
+  Funciona en algunos motores, falla en otros, es inconsistente. Usa el
+  tipo correcto.
+
+### Para seguir aprendiendo
+
+- [SQL Tutorial — Mode Analytics](https://mode.com/sql-tutorial/)
+- [SQLBolt](https://sqlbolt.com/) — interactivo, perfecto para repasar.
+- [Postgres docs — SELECT](https://www.postgresql.org/docs/current/sql-select.html)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-select-where-quiz"
+  xpReward={50}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿En qué orden se ejecutan estas cláusulas?',
+      options: [
+        'SELECT → FROM → WHERE → ORDER BY',
+        'FROM → WHERE → SELECT → ORDER BY',
+        'WHERE → FROM → SELECT → ORDER BY',
+        'FROM → SELECT → WHERE → ORDER BY',
+      ],
+      correctIndex: 1,
+      explanation: 'FROM identifica la tabla; WHERE filtra; SELECT proyecta; ORDER BY ordena.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '¿Cuál es la forma correcta de buscar filas con country nulo?',
+      options: [
+        "WHERE country = NULL",
+        "WHERE country = ''",
+        'WHERE country IS NULL',
+        "WHERE country != 'not null'",
+      ],
+      correctIndex: 2,
+      explanation: 'Comparaciones con NULL devuelven NULL; usa IS NULL / IS NOT NULL.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: '`BETWEEN a AND b` es inclusivo en ambos extremos.',
+      correct: true,
+      explanation: 'Equivale a >= a AND <= b.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Completa la cláusula que descarta duplicados.',
+      template: 'SELECT ___ country FROM users;',
+      answer: 'DISTINCT',
+      caseSensitive: false,
+      explanation: 'DISTINCT elimina filas duplicadas en el resultado.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: '¿Por qué evitar `LIKE \'%foo%\'` en columnas grandes?',
+      options: [
+        'No es estándar SQL',
+        'Causa un full table scan: no puede usar índice convencional',
+        'Solo funciona en MySQL',
+        'No diferencia mayúsculas',
+      ],
+      correctIndex: 1,
+      explanation: 'El wildcard al inicio impide que un índice B-tree lo aproveche; usa full-text search.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="sql-select-exercise"
+  title="Constructor de WHERE"
+  description="Implementa `buildWhere(filters)` que recibe un objeto y devuelve la cláusula WHERE como string. Soporta strings (=), arrays (IN), null (IS NULL)."
+  language="javascript"
+  starterCode={`function buildWhere(filters) {
+  // filters: { country: 'CO', plan: ['gold','platinum'], deleted_at: null }
+  // -> "WHERE country = 'CO' AND plan IN ('gold','platinum') AND deleted_at IS NULL"
+  return '';
+}
+
+console.log(buildWhere({ country: 'CO', plan: ['gold','platinum'], deleted_at: null }));`}
+  solution={`function buildWhere(filters) {
+  const parts = [];
+  for (const [k, v] of Object.entries(filters)) {
+    if (v === null) parts.push(\`\${k} IS NULL\`);
+    else if (Array.isArray(v)) parts.push(\`\${k} IN (\${v.map(x => "'"+x+"'").join(',')})\`);
+    else parts.push(\`\${k} = '\${v}'\`);
+  }
+  return parts.length ? 'WHERE ' + parts.join(' AND ') : '';
+}
+console.log(buildWhere({ country: 'CO', plan: ['gold','platinum'], deleted_at: null }));`}
+  hints={[
+    'Object.entries te da pares [key, value].',
+    'Array.isArray distingue listas de valores planos.',
+    'Si filters está vacío, devuelve string vacío.',
+  ]}
+  tests={[
+    {
+      description: 'string simple',
+      assert: 'buildWhere({country:"CO"}) === "WHERE country = \\\'CO\\\'"',
+    },
+    {
+      description: 'IN con array',
+      assert: 'buildWhere({plan:["gold","silver"]}) === "WHERE plan IN (\\\'gold\\\',\\\'silver\\\')"',
+    },
+    {
+      description: 'NULL explícito',
+      assert: 'buildWhere({deleted_at:null}) === "WHERE deleted_at IS NULL"',
+    },
+    {
+      description: 'vacío',
+      assert: 'buildWhere({}) === ""',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **JOINs en profundidad** — la operación que une tablas y
+te da pesadillas hasta que la dominas.

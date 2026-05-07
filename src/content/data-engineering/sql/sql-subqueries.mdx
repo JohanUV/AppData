@@ -1,0 +1,313 @@
+## Subqueries
+
+Una **subquery** (o "subconsulta") es una query dentro de otra. Te permite
+descomponer un problema complejo en pasos: primero calculas algo, luego
+usas ese resultado como insumo de la query principal. Son la base mental
+para entender CTEs (próxima lección), que son básicamente subqueries con
+nombre.
+
+### Tres lugares donde aparecen
+
+1. **En el `SELECT`** — devuelven un valor escalar.
+2. **En el `FROM`** — son una "tabla derivada".
+3. **En el `WHERE`** — filtran usando otro conjunto.
+
+### Subquery escalar (en SELECT)
+
+Devuelve **una sola fila y una sola columna**:
+
+```sql
+SELECT
+  user_id,
+  amount,
+  (SELECT AVG(amount) FROM payments) AS global_avg,
+  amount - (SELECT AVG(amount) FROM payments) AS deviation
+FROM payments;
+```
+
+Cuidado: esa subquery se ejecuta una vez (motor decente lo cachea). Si
+escribes mal y depende de la fila externa, se ejecuta por fila —
+catastrófico en performance.
+
+### Subquery correlacionada
+
+Cuando la subquery **referencia** una columna de la query externa:
+
+```sql
+SELECT
+  u.id,
+  u.name,
+  (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) AS orders_count
+FROM users u;
+```
+
+Para cada fila de `users`, la subquery se evalúa de nuevo. Útil pero
+caro. Casi siempre se puede reescribir con `LEFT JOIN + GROUP BY` y
+queda más rápido.
+
+### Subquery en FROM (tabla derivada)
+
+```sql
+SELECT
+  country,
+  AVG(orders_per_user) AS avg_orders_per_user
+FROM (
+  SELECT
+    u.country,
+    u.id AS user_id,
+    COUNT(o.id) AS orders_per_user
+  FROM users u
+  LEFT JOIN orders o ON u.id = o.user_id
+  GROUP BY u.country, u.id
+) AS user_summary
+GROUP BY country;
+```
+
+Necesitas dos niveles de agregación: primero por user, luego promediar por
+país. La subquery actúa como "tabla intermedia" sin tener que crearla
+físicamente.
+
+<Callout type="info" title="Tabla derivada vs CTE">
+  Una subquery en FROM y una CTE (`WITH`) son funcionalmente equivalentes
+  en la mayoría de casos. CTE gana en legibilidad cuando hay varios pasos
+  o cuando la usarás más de una vez.
+</Callout>
+
+### Subquery en WHERE: IN
+
+```sql
+-- Usuarios que han comprado
+SELECT id, name FROM users
+WHERE id IN (SELECT DISTINCT user_id FROM orders);
+
+-- Usuarios que NUNCA compraron
+SELECT id, name FROM users
+WHERE id NOT IN (SELECT user_id FROM orders WHERE user_id IS NOT NULL);
+```
+
+<Callout type="warning" title="NULL y NOT IN">
+  Si la subquery puede devolver NULLs, `NOT IN` se rompe: NOT IN (..., NULL,
+  ...) devuelve UNKNOWN para cada comparación. Resultado: 0 filas. Por eso
+  agregamos `WHERE user_id IS NOT NULL` o usamos `NOT EXISTS`.
+</Callout>
+
+### EXISTS / NOT EXISTS
+
+Versión más segura y a menudo más rápida:
+
+<AnnotatedCode
+  language="sql"
+  filename="exists.sql"
+  annotations={[
+    {
+      match: 'WHERE EXISTS',
+      title: 'Existe al menos una fila',
+      body: 'EXISTS retorna true si la subquery produce ≥ 1 fila. El motor para de leer en cuanto encuentra la primera — eficiente.',
+    },
+    {
+      match: 'SELECT 1',
+      title: 'No importa qué proyectes',
+      body: 'EXISTS sólo evalúa "hay filas". El SELECT de adentro puede ser SELECT 1, SELECT *, lo que sea — no se usa.',
+    },
+    {
+      match: 'WHERE o.user_id = u.id',
+      title: 'Correlación',
+      body: 'Aquí relacionamos la subquery con cada usuario externo. Sin esa condición, la subquery sería independiente y no haría sentido.',
+    },
+    {
+      match: 'NOT EXISTS',
+      title: 'Anti-join seguro con NULLs',
+      body: 'A diferencia de NOT IN, NOT EXISTS funciona correctamente cuando hay NULLs. Es la forma preferida de "filas sin match".',
+    },
+  ]}
+>
+{`-- Usuarios CON al menos una orden
+SELECT u.id, u.name
+FROM users u
+WHERE EXISTS (
+  SELECT 1 FROM orders o WHERE o.user_id = u.id
+);
+
+-- Usuarios SIN ninguna orden
+SELECT u.id, u.name
+FROM users u
+WHERE NOT EXISTS (
+  SELECT 1 FROM orders o WHERE o.user_id = u.id
+);`}
+</AnnotatedCode>
+
+### IN vs EXISTS vs JOIN
+
+Tres formas de "usuarios con órdenes":
+
+```sql
+-- A. IN
+SELECT id, name FROM users
+WHERE id IN (SELECT user_id FROM orders);
+
+-- B. EXISTS
+SELECT id, name FROM users u
+WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id);
+
+-- C. JOIN + DISTINCT
+SELECT DISTINCT u.id, u.name
+FROM users u
+INNER JOIN orders o ON u.id = o.user_id;
+```
+
+¿Cuál es mejor? Depende del motor y datos. Reglas generales:
+
+- **EXISTS** es seguro con NULLs, suele ser rápido.
+- **IN** es legible, cuidado con NULLs.
+- **JOIN + DISTINCT** es legible si ya estás JOIN-eando otras cosas, pero
+  tienes que dedup explícito.
+
+### Operadores ANY / ALL
+
+Comparas con conjuntos:
+
+```sql
+-- Productos cuyo precio está por encima de TODOS los de la categoría 'basic'
+SELECT name, price FROM products
+WHERE price > ALL (SELECT price FROM products WHERE category = 'basic');
+
+-- Productos con precio mayor a alguno de los de 'premium'
+SELECT name, price FROM products
+WHERE price > ANY (SELECT price FROM products WHERE category = 'premium');
+```
+
+`> ALL` ≡ "mayor que el máximo del set"; `> ANY` ≡ "mayor que el mínimo".
+Usados con menos frecuencia que IN/EXISTS.
+
+### Errores comunes
+
+- **Subquery escalar que devuelve más de una fila**. Error en runtime.
+  Asegura `LIMIT 1` o agregación.
+- **`NOT IN` con NULLs en la subquery**. Devuelve 0 filas. Usa `NOT
+  EXISTS` o filtra los nulls.
+- **Subqueries correlacionadas anidadas**. N×M evaluaciones, perfomance
+  espantoso. Reescribe con JOIN.
+- **Subquery cuando un JOIN basta**. Cuesta más al lector. JOINs son a
+  menudo más legibles.
+
+### Para seguir aprendiendo
+
+- [Mode SQL — subqueries](https://mode.com/sql-tutorial/sql-sub-queries/)
+- [Use The Index, Luke! — Subqueries](https://use-the-index-luke.com/sql/where-clause/null/inversed-condition)
+
+---
+
+## Quiz
+
+<Quiz
+  id="sql-subqueries-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Una subquery escalar...',
+      options: [
+        'Devuelve cualquier número de filas',
+        'Devuelve exactamente una fila y una columna',
+        'Solo funciona en WHERE',
+        'No es estándar SQL',
+      ],
+      correctIndex: 1,
+      explanation: 'Si retorna más de una fila/columna, el motor lanza error.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Por qué `NOT IN` puede romperse con NULLs?',
+      options: [
+        'NOT IN no es estándar',
+        'NULL hace que las comparaciones devuelvan UNKNOWN; resultado: 0 filas',
+        'Solo funciona en MySQL',
+        'NOT IN es más lento',
+      ],
+      correctIndex: 1,
+      explanation: 'NOT IN (1, NULL) es UNKNOWN para todo. Usa NOT EXISTS o filtra NULLs.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'En `EXISTS`, lo que proyecta la subquery (SELECT 1, SELECT *, etc.) no se usa.',
+      correct: true,
+      explanation: 'EXISTS sólo verifica si hay filas; el motor ignora las columnas.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Filtra usuarios que NUNCA hicieron orden, sin caer en el bug de NOT IN + NULL.',
+      template: 'SELECT u.id FROM users u WHERE NOT ___ (SELECT 1 FROM orders o WHERE o.user_id = u.id);',
+      answer: 'EXISTS',
+      caseSensitive: false,
+      explanation: 'NOT EXISTS es seguro con NULLs.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Una subquery correlacionada se evalúa...',
+      options: [
+        'Una sola vez',
+        'Una vez por cada fila de la query externa',
+        'Solo en EXPLAIN',
+        'Sólo si tiene LIMIT',
+      ],
+      correctIndex: 1,
+      explanation: 'Por eso a menudo se reescribe con JOIN para evitar N×M.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="sql-subqueries-exercise"
+  title="Anti-join en JS"
+  description="Implementa `antiJoin(left, right, leftKey, rightKey)` que devuelve las filas de `left` cuyo `leftKey` no aparece en ningún `rightKey` de right. Equivalente lógico a NOT EXISTS."
+  language="javascript"
+  starterCode={`function antiJoin(left, right, leftKey, rightKey) {
+  return [];
+}
+
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'},{id:3,name:'Carla'}];
+const orders = [{user_id:1},{user_id:1},{user_id:3}];
+console.log(antiJoin(users, orders, 'id', 'user_id'));
+// [{id:2, name:'Beto'}]`}
+  solution={`function antiJoin(left, right, leftKey, rightKey) {
+  const rightKeys = new Set(right.map(r => r[rightKey]));
+  return left.filter(l => !rightKeys.has(l[leftKey]));
+}
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'},{id:3,name:'Carla'}];
+const orders = [{user_id:1},{user_id:1},{user_id:3}];
+console.log(antiJoin(users, orders, 'id', 'user_id'));`}
+  hints={[
+    'Set te da chequeo de pertenencia O(1).',
+    'filter mantiene sólo las que NO están en el set.',
+    'No olvides considerar duplicados en right (no afectan al resultado).',
+  ]}
+  tests={[
+    {
+      description: 'usuarios sin orden',
+      assert: 'antiJoin([{id:1},{id:2}],[{uid:1}],"id","uid").length === 1',
+    },
+    {
+      description: 'todos tienen orden -> vacío',
+      assert: 'antiJoin([{id:1}],[{uid:1}],"id","uid").length === 0',
+    },
+    {
+      description: 'right vacío -> todos pasan',
+      assert: 'antiJoin([{id:1},{id:2}],[],"id","uid").length === 2',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **CTEs (WITH)** — la sintaxis legible para descomponer
+queries en pasos.
