@@ -1,0 +1,377 @@
+## Comandos esenciales: status, add, commit, log
+
+Si tuvieras que aprender solo cinco comandos de Git para sobrevivir, serían
+estos: `status`, `add`, `commit`, `log` y `diff`. Los vas a teclear cientos de
+veces al día. Esta lección los desmenuza con sus flags más útiles, no
+exhaustivamente, sino los que realmente vas a usar.
+
+### git status: tu mapa mental
+
+`git status` es el comando que más vas a ejecutar. Muestra:
+
+- En qué rama estás.
+- Qué archivos están modificados pero sin agregar a staging.
+- Qué archivos están en staging listos para commit.
+- Qué archivos no son rastreados (untracked).
+
+```bash
+git status
+```
+
+Salida típica con varios estados:
+
+```
+On branch main
+Changes to be committed:
+  (use "git restore --staged <file>..." to unstage)
+        modified:   pipeline.py
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+        modified:   README.md
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+        secrets.env
+```
+
+Tres secciones, tres zonas:
+
+- **Changes to be committed** → staging (verde si tienes color activado).
+- **Changes not staged for commit** → working directory (rojo).
+- **Untracked files** → archivos nuevos que Git no sigue (rojo).
+
+Para una versión condensada:
+
+```bash
+git status -s
+# M  pipeline.py    (modificado y en staging)
+#  M README.md      (modificado, no en staging)
+# ?? secrets.env    (untracked)
+```
+
+Las dos columnas representan staging y working: `M ` = modificado en staging,
+` M` = modificado solo en working, `MM` = modificado en ambos (lo que tienes en
+staging es distinto a lo del working).
+
+### git add: el arte de seleccionar
+
+`git add` mueve cambios a staging. Tres formas principales:
+
+```bash
+# Un archivo específico
+git add pipeline.py
+
+# Toda la carpeta actual y subcarpetas
+git add .
+
+# Patrón (todos los .py en src/)
+git add 'src/*.py'
+
+# Solo archivos ya rastreados (excluye nuevos)
+git add -u
+
+# Modo interactivo: te pregunta cambio por cambio
+git add -p
+```
+
+`git add -p` (de "patch") es el truco que separa al usuario casual del
+profesional. Cuando tocaste 10 cosas en un archivo pero solo quieres commitear
+3 de ellas, lo invocas y Git te muestra cada hunk preguntando `Stage this hunk
+[y,n,q,a,d,s,e,?]`. Las teclas más útiles:
+
+- `y` — sí, agrega este hunk.
+- `n` — no, sáltalo.
+- `s` — split: divide el hunk en pedazos más pequeños.
+- `q` — quit.
+
+Con esto haces commits temáticos perfectos sin tener que mover cosas
+manualmente.
+
+### git diff: ¿qué cambió exactamente?
+
+Muestra las diferencias entre las zonas:
+
+<AnnotatedCode
+  language="bash"
+  filename="terminal"
+  annotations={[
+    {
+      match: 'git diff',
+      title: 'Working vs staging',
+      body: 'Sin args, te muestra los cambios que tienes en working y aún no agregaste a staging. Lo que verías al hacer git add ahora.',
+    },
+    {
+      match: '--staged',
+      title: 'Staging vs último commit',
+      body: 'Con --staged (o --cached), te muestra qué cambió respecto al último commit pero ya está en staging. Lo que se va a commitear si haces git commit ahora.',
+    },
+    {
+      match: 'HEAD',
+      title: 'Working+staging vs último commit',
+      body: 'HEAD apunta al último commit. git diff HEAD muestra todo lo modificado desde entonces, esté o no en staging.',
+    },
+    {
+      match: 'pipeline.py',
+      title: 'Limita a un archivo',
+      body: 'Cualquier comando diff acepta paths para enfocarte en un archivo. Útil cuando hay mucho ruido.',
+    },
+  ]}
+>
+{`# Cambios sin staging
+git diff
+
+# Cambios ya staged (lo que va al próximo commit)
+git diff --staged
+
+# Todo lo modificado desde el último commit
+git diff HEAD
+
+# Solo un archivo
+git diff pipeline.py`}
+</AnnotatedCode>
+
+El formato del diff es estándar (unified diff). Lee así:
+
+```diff
+diff --git a/pipeline.py b/pipeline.py
+index e69de29..d95f3ad 100644
+--- a/pipeline.py
++++ b/pipeline.py
+@@ -1,3 +1,4 @@
+ def load(path):
+-    return open(path).read()
++    with open(path) as f:
++        return f.read()
+```
+
+`-` líneas eliminadas, `+` líneas agregadas. `@@ -1,3 +1,4 @@` indica
+posición y tamaño del hunk.
+
+### git commit: variantes útiles
+
+Más allá del básico `git commit -m "mensaje"`:
+
+```bash
+# Mensaje multilínea: abre el editor configurado
+git commit
+
+# Agrega y commitea archivos ya rastreados de un tiro
+git commit -am "fix: typo en docs"
+
+# Modifica el último commit (NO pushees después si ya lo subiste)
+git commit --amend
+git commit --amend -m "nuevo mensaje"
+
+# Commit sin verificar (salta hooks pre-commit). Útil pero peligroso.
+git commit --no-verify
+```
+
+`--amend` es muy útil para corregir un mensaje recién escrito o agregar un
+archivo que olvidaste. **Solo úsalo en commits que aún no has pusheado**: si
+otros ya tienen ese commit, reescribirlo te trae problemas.
+
+### git log: navegar el histórico
+
+Las variantes que de verdad usarás:
+
+```bash
+# Compacto
+git log --oneline
+
+# Con grafo de ramas (¡el preferido!)
+git log --oneline --graph --all
+
+# Últimos N commits
+git log -5
+
+# Filtrar por autor
+git log --author="Johan"
+
+# Filtrar por mensaje
+git log --grep="auth"
+
+# Solo commits que tocan un archivo
+git log --follow pipeline.py
+
+# Stats: cuántas líneas cambiadas
+git log --stat
+```
+
+Mi alias favorito (de la lección anterior):
+
+```bash
+git config --global alias.lg "log --oneline --graph --all --decorate"
+git lg
+```
+
+Te muestra todo el grafo del repo en una sola pantalla. Es como un mapa.
+
+### Deshacer cambios (introducción)
+
+Vas a meter la pata. Lo importante es saber salir:
+
+```bash
+# Quitar un archivo de staging (lo modificado se conserva)
+git restore --staged pipeline.py
+
+# Descartar cambios en working (CUIDADO: pierdes los cambios)
+git restore pipeline.py
+
+# Volver al estado del último commit (peligroso)
+git restore .
+```
+
+Con Git ≥ 2.23 se prefiere `restore` sobre los antiguos `reset` y `checkout`.
+Si ves tutoriales con `git checkout pipeline.py` para descartar cambios, es
+equivalente a `git restore pipeline.py` — funciona igual, es más viejo.
+
+### Errores comunes
+
+- **`git add .` sin revisar**. Te termina commiteando un `.env` con secretos.
+  Siempre `git status` antes y después.
+- **Olvidar `--staged` en `git diff`**. Crees que ya está todo guardado pero
+  solo ves los cambios sin agregar.
+- **`git commit --amend` después de pushear**. Reescribes histórico compartido,
+  obligas a otros a hacer rebase o force-push. Solo amend en commits locales.
+- **`git restore .`** sin tener nada en staging cuando solo querías deshacer un
+  archivo. Pierdes todo el trabajo no commiteado. Siempre menciona el path.
+
+### Para seguir aprendiendo
+
+- [Oh Shit, Git!?!](https://ohshitgit.com/) — recetas para salir de cualquier
+  agujero (en lenguaje claro y honesto).
+- [git-scm: Pro Git book §2.2 Recording Changes](https://git-scm.com/book/en/v2/Git-Basics-Recording-Changes-to-the-Repository)
+- [Git Cheat Sheet — GitHub](https://education.github.com/git-cheat-sheet-education.pdf)
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-essentials-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Modificaste pipeline.py pero no hiciste git add. ¿Qué muestra `git diff` (sin flags)?',
+      options: [
+        'Nada, porque no hay nada en staging',
+        'Las diferencias entre working y staging',
+        'Las diferencias entre el último commit y working',
+        'El histórico completo',
+      ],
+      correctIndex: 1,
+      explanation: 'git diff sin flags compara working con staging, equivalente a "qué pasaría si hago add ahora".',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '¿Cuándo usar `git commit --amend`?',
+      options: [
+        'Para corregir un commit que ya pusheaste',
+        'Para corregir el último commit local antes de pushear',
+        'Para deshacer un commit',
+        'Nunca, es destructivo',
+      ],
+      correctIndex: 1,
+      explanation: 'Amend reescribe el último commit. Seguro en local; peligroso si ya está en remoto.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: '`git restore --staged pipeline.py` borra los cambios del archivo.',
+      correct: false,
+      explanation: 'Solo lo saca de staging; los cambios siguen en working. Lo destructivo es `git restore pipeline.py` (sin --staged).',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Comando para ver el histórico con grafo de ramas.',
+      template: 'git log --oneline --___',
+      answer: 'graph',
+      caseSensitive: false,
+      explanation: '--graph dibuja el grafo de ramas en ASCII junto al log.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q5',
+      prompt: 'Ordena el flujo "tengo cambios en 2 archivos, solo quiero commitear uno".',
+      steps: [
+        'git status (ver estado)',
+        'git add archivo1.py (solo el deseado)',
+        'git diff --staged (verificar)',
+        'git commit -m "..."',
+      ],
+      explanation: 'Inspeccionar → seleccionar → verificar staging → sellar.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="git-essentials-exercise"
+  title="Resumen de git status"
+  description="Dada una salida de git status -s como string, devuelve un objeto con los conteos: { staged, modified, untracked }."
+  language="javascript"
+  starterCode={`function summarizeStatus(output) {
+  // output es un string como:
+  // "M  pipeline.py\\n M README.md\\n?? secrets.env"
+  // Cada línea: 2 chars de estado + espacio + path
+  // Col 0: staging (M=modified, A=added, D=deleted, ' '=nothing)
+  // Col 1: working (M=modified, ?=untracked)
+  return { staged: 0, modified: 0, untracked: 0 };
+}
+
+const output = 'M  pipeline.py\\n M README.md\\n?? secrets.env';
+console.log(summarizeStatus(output));`}
+  solution={`function summarizeStatus(output) {
+  const lines = output.split('\\n').filter(Boolean);
+  let staged = 0, modified = 0, untracked = 0;
+  for (const line of lines) {
+    const x = line[0], y = line[1];
+    if (x === '?' && y === '?') untracked++;
+    else {
+      if (x !== ' ' && x !== '?') staged++;
+      if (y !== ' ' && y !== '?') modified++;
+    }
+  }
+  return { staged, modified, untracked };
+}
+const output = 'M  pipeline.py\\n M README.md\\n?? secrets.env';
+console.log(summarizeStatus(output));`}
+  hints={[
+    'Cada línea tiene 2 caracteres de estado al inicio.',
+    'col[0] es staging, col[1] es working.',
+    '?? es marca de untracked.',
+  ]}
+  tests={[
+    {
+      description: 'cuenta staged correctamente',
+      assert: 'summarizeStatus("M  a.py").staged === 1',
+    },
+    {
+      description: 'cuenta modificados sin staging',
+      assert: 'summarizeStatus(" M b.py").modified === 1',
+    },
+    {
+      description: 'cuenta untracked',
+      assert: 'summarizeStatus("?? c.py").untracked === 1',
+    },
+    {
+      description: 'mix completo',
+      assert: 'JSON.stringify(summarizeStatus("M  a\\n M b\\n?? c")) === \\\'{"staged":1,"modified":1,"untracked":1}\\\'',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **branches y merge** — el superpoder de Git para trabajar en
+varias cosas a la vez sin pisarte.

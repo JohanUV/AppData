@@ -1,0 +1,333 @@
+## Branches y merge
+
+Hasta ahora trabajamos en una sola línea de tiempo: cada commit encima del
+anterior. Funciona para un solo desarrollador en un solo problema. Pero la
+realidad es otra: estás arreglando un bug urgente cuando llega un ticket nuevo,
+o quieres probar una refactorización sin romper la versión que funciona, o tres
+personas tocan el mismo repo a la vez.
+
+La respuesta de Git es **branching**: crear líneas de tiempo paralelas que
+luego se fusionan. Y aquí Git brilla — branches son baratas, instantáneas y se
+combinan con `merge`.
+
+### ¿Qué es una branch realmente?
+
+Una branch en Git **no es una copia del código**. Es solo un puntero móvil a
+un commit. Crear una branch es crear un puntero nuevo (operación que toma
+microsegundos). Cuando haces commits en esa branch, el puntero avanza.
+
+<Diagram type="mermaid">
+{`gitGraph
+  commit id: "init"
+  commit id: "feat A"
+  branch feature/x
+  commit id: "wip 1"
+  commit id: "wip 2"
+  checkout main
+  commit id: "feat B"`}
+</Diagram>
+
+`main` y `feature/x` son simplemente etiquetas que apuntan a commits distintos.
+Tienen el mismo histórico hasta el punto donde divergieron.
+
+### Operaciones básicas
+
+```bash
+# Listar ramas (la actual lleva *)
+git branch
+
+# Crear una rama (no cambia a ella todavía)
+git branch feature/limpieza-nulls
+
+# Crear y cambiar en un solo paso (lo más común)
+git switch -c feature/limpieza-nulls
+# o el clásico:
+git checkout -b feature/limpieza-nulls
+
+# Cambiar a una rama existente
+git switch main
+git checkout main
+
+# Borrar una rama (debe estar fusionada)
+git branch -d feature/limpieza-nulls
+
+# Borrar a la fuerza (incluso sin merge)
+git branch -D feature/limpieza-nulls
+```
+
+`git switch` es el comando moderno (Git ≥ 2.23) específico para cambiar de
+rama. `git checkout` también funciona y verás ambos en tutoriales — son
+intercambiables para esto.
+
+### Trabajar en una rama
+
+Flujo típico:
+
+```bash
+# Empiezo desde main actualizado
+git switch main
+
+# Creo rama temática
+git switch -c feature/handle-nulls
+
+# Edito, agrego, commiteo varias veces
+echo "# fix nulls" >> pipeline.py
+git add pipeline.py
+git commit -m "feat: skip null amounts"
+
+# Más cambios...
+git commit -am "test: add null case"
+```
+
+Tienes 2 commits nuevos en `feature/handle-nulls`. `main` sigue en su sitio.
+Si te das cuenta de que el cambio era una mala idea: te cambias a `main` y
+borras la rama, listo, no contaminaste nada.
+
+### Merge: combinar ramas
+
+Cuando termines tu feature, quieres llevar esos commits de vuelta a `main`:
+
+```bash
+git switch main
+git merge feature/handle-nulls
+```
+
+Hay tres escenarios posibles:
+
+**1. Fast-forward.** Si `main` no avanzó desde que creaste la rama, Git
+simplemente mueve el puntero `main` al último commit de `feature/handle-nulls`.
+No hay merge commit, el histórico queda lineal.
+
+```bash
+git merge feature/handle-nulls
+# Updating e8a91b2..3f12c4a
+# Fast-forward
+```
+
+**2. Three-way merge.** Si `main` avanzó por su lado mientras tú trabajabas
+en la rama, Git crea un **merge commit** que tiene dos padres: el último de
+main y el último de tu rama. El historial pasa a tener forma de Y.
+
+<Diagram type="mermaid">
+{`gitGraph
+  commit id: "init"
+  branch feature
+  commit id: "f1"
+  commit id: "f2"
+  checkout main
+  commit id: "m1"
+  merge feature id: "merge"`}
+</Diagram>
+
+**3. Conflicto.** Si las dos ramas modificaron las mismas líneas del mismo
+archivo de forma incompatible, Git no sabe cuál ganar y te pide ayuda.
+
+### Resolver conflictos
+
+Cuando hay conflicto, Git pausa el merge y marca los archivos:
+
+```python
+def parse_amount(s):
+<<<<<<< HEAD
+    return float(s)
+=======
+    return float(s.strip()) if s else 0
+>>>>>>> feature/handle-nulls
+```
+
+- Entre `<<<<<<< HEAD` y `=======` está la versión de tu rama actual (donde
+  estabas al hacer el merge).
+- Entre `=======` y `>>>>>>>` está la versión de la rama que mergeas.
+
+Tú decides la versión final. Editas el archivo dejándolo como debería quedar
+(borrando los marcadores), por ejemplo:
+
+```python
+def parse_amount(s):
+    return float(s.strip()) if s else 0
+```
+
+Después marcas el conflicto resuelto y completas el merge:
+
+```bash
+git add pipeline.py
+git commit       # Git ya tiene un mensaje de merge precargado
+```
+
+Si te arrepentiste a mitad:
+
+```bash
+git merge --abort
+```
+
+Vuelves al estado anterior al `git merge`, sin cambios.
+
+### Estrategia: ramas cortas y temáticas
+
+Una práctica común y muy buena:
+
+- **Una rama por feature/bug.** Nombres descriptivos:
+  `feature/null-handling`, `fix/api-timeout`, `chore/update-deps`.
+- **Vida corta**: ideal 1-3 días. Mientras más tiempo viva, más difícil será
+  mergear (más cambios divergentes en main).
+- **Mergeas pronto**, mergeas seguido. La regla: si terminaste algo coherente,
+  mergea. No acumules.
+
+Así se ve un repo sano:
+
+```
+main:    A---B---C---D---E---F   (siempre verde, siempre deployable)
+              \\         \\
+              feat/x    feat/y   (ramas cortas, mergeadas pronto)
+```
+
+Y así uno enfermo:
+
+```
+main:    A---B---C---D
+              \\
+              feat/refactor-todo   (vida 2 meses, 80 commits, imposible mergear)
+```
+
+### Errores comunes
+
+- **Trabajar directamente en main**. Te pierdes el beneficio del aislamiento.
+  Disciplínate: rama nueva para cada cosa.
+- **Crear ramas sin actualizar main primero**. Bases tu trabajo en código
+  viejo. Empieza con `git switch main && git pull` (lo verás en lección 6).
+- **Borrar una rama no mergeada con `-D`** y perder el trabajo. Si tenías
+  cambios importantes ahí, recuperar requiere `git reflog` (avanzado).
+- **Resolver conflictos sin entender qué pasó**. Borrar los marcadores `<<<<`
+  no es resolver: hay que pensar qué versión es correcta.
+- **Hacer un merge enorme tras semanas de divergencia**. Conflictos múltiples
+  en cascada. Por eso ramas cortas.
+
+### Para seguir aprendiendo
+
+- [Pro Git §3 — Branching](https://git-scm.com/book/en/v2/Git-Branching-Branches-in-a-Nutshell) —
+  el capítulo más importante del libro.
+- [Learn Git Branching](https://learngitbranching.js.org/) — el simulador
+  visual; los niveles de "remote" y "rebase" cubren todo lo siguiente.
+- [git-scm: merge strategies](https://git-scm.com/docs/merge-strategies)
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-branches-merge-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Qué es una branch en Git, técnicamente?',
+      options: [
+        'Una copia del repositorio',
+        'Un puntero móvil a un commit',
+        'Una carpeta separada en el disco',
+        'Un fork remoto',
+      ],
+      correctIndex: 1,
+      explanation: 'Solo un puntero ligero. Por eso crear branches es instantáneo.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Cuándo Git hace un fast-forward merge?',
+      options: [
+        'Siempre que mergeas',
+        'Cuando la rama destino no avanzó desde que la separaste',
+        'Cuando hay conflictos',
+        'Solo en main',
+      ],
+      correctIndex: 1,
+      explanation: 'Si destino no avanzó, el puntero solo se mueve sin merge commit.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Un conflicto de merge significa que Git no puede combinar automáticamente porque las dos ramas modificaron las mismas líneas.',
+      correct: true,
+      explanation: 'Git pausa y te pide que decidas qué versión queda.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Comando moderno para crear y cambiar a una rama nueva.',
+      template: 'git switch ___ feature/x',
+      answer: '-c',
+      caseSensitive: true,
+      explanation: '-c (create) crea y se cambia en un solo paso.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'En un conflicto, ¿qué hay entre `<<<<<<< HEAD` y `=======`?',
+      options: [
+        'La versión de la rama que estás mergeando',
+        'La versión de tu rama actual',
+        'La versión más nueva',
+        'La versión sin cambios',
+      ],
+      correctIndex: 1,
+      explanation: 'HEAD = tu rama actual; lo de abajo es la rama que estás trayendo.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="git-branches-exercise"
+  title="Simulador de fast-forward"
+  description="Implementa `canFastForward(targetBranch, sourceBranch)` donde cada rama es un array de commits (strings). Hay fast-forward posible si target es prefijo de source."
+  language="javascript"
+  starterCode={`function canFastForward(target, source) {
+  // target y source son arrays de commits desde el más viejo al más nuevo.
+  // Devuelve true si target es prefijo de source.
+  return false;
+}
+
+console.log(canFastForward(['A','B'], ['A','B','C','D'])); // true
+console.log(canFastForward(['A','B','X'], ['A','B','C','D'])); // false`}
+  solution={`function canFastForward(target, source) {
+  if (target.length > source.length) return false;
+  for (let i = 0; i < target.length; i++) {
+    if (target[i] !== source[i]) return false;
+  }
+  return true;
+}
+console.log(canFastForward(['A','B'], ['A','B','C','D']));
+console.log(canFastForward(['A','B','X'], ['A','B','C','D']));`}
+  hints={[
+    'target debe ser más corto o igual que source.',
+    'Cada commit en target debe aparecer en la misma posición en source.',
+  ]}
+  tests={[
+    {
+      description: 'prefijo claro: true',
+      assert: 'canFastForward(["A","B"],["A","B","C"]) === true',
+    },
+    {
+      description: 'arrays iguales: true',
+      assert: 'canFastForward(["A","B"],["A","B"]) === true',
+    },
+    {
+      description: 'divergencia en commit: false',
+      assert: 'canFastForward(["A","X"],["A","B","C"]) === false',
+    },
+    {
+      description: 'target más largo: false',
+      assert: 'canFastForward(["A","B","C","D"],["A","B"]) === false',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **trabajar con remotos en GitHub** — push, pull, clone y
+autenticación con SSH.

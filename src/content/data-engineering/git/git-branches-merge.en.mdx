@@ -1,0 +1,307 @@
+## Branches and merge
+
+Until now you've worked on a single timeline: each commit on top of the
+previous. Fine for one developer on one task. Reality is different: you're
+fixing an urgent bug when a new ticket lands, you want to try a refactor
+without breaking the working version, three people are editing the same repo
+at once.
+
+Git's answer is **branching**: create parallel timelines and merge them
+later. Branches are cheap, instantaneous, and combine via `merge`.
+
+### What is a branch, really?
+
+A Git branch **is not a copy of the code**. It's just a movable pointer to a
+commit. Creating a branch is creating a new pointer (microseconds). When you
+commit on the branch, the pointer advances.
+
+<Diagram type="mermaid">
+{`gitGraph
+  commit id: "init"
+  commit id: "feat A"
+  branch feature/x
+  commit id: "wip 1"
+  commit id: "wip 2"
+  checkout main
+  commit id: "feat B"`}
+</Diagram>
+
+`main` and `feature/x` are simply labels pointing to different commits.
+They share history up to the divergence point.
+
+### Basic operations
+
+```bash
+# List branches (current shows *)
+git branch
+
+# Create a branch (no switch)
+git branch feature/null-cleanup
+
+# Create AND switch (most common)
+git switch -c feature/null-cleanup
+# or the classic:
+git checkout -b feature/null-cleanup
+
+# Switch to existing branch
+git switch main
+git checkout main
+
+# Delete a branch (must be merged)
+git branch -d feature/null-cleanup
+
+# Force delete (even unmerged)
+git branch -D feature/null-cleanup
+```
+
+`git switch` is the modern command (Git ≥ 2.23) for switching branches.
+`git checkout` also works — interchangeable here.
+
+### Working in a branch
+
+Typical flow:
+
+```bash
+git switch main
+git switch -c feature/handle-nulls
+echo "# fix nulls" >> pipeline.py
+git add pipeline.py
+git commit -m "feat: skip null amounts"
+git commit -am "test: add null case"
+```
+
+You have 2 new commits in `feature/handle-nulls`. `main` is untouched.
+
+### Merge: combining branches
+
+When the feature is done, bring those commits into `main`:
+
+```bash
+git switch main
+git merge feature/handle-nulls
+```
+
+Three possible scenarios:
+
+**1. Fast-forward.** If `main` didn't advance since you branched, Git just
+moves the `main` pointer to the latest commit of `feature/handle-nulls`. No
+merge commit, linear history.
+
+**2. Three-way merge.** If `main` advanced while you worked on the branch,
+Git creates a **merge commit** with two parents. History gets a Y shape.
+
+<Diagram type="mermaid">
+{`gitGraph
+  commit id: "init"
+  branch feature
+  commit id: "f1"
+  commit id: "f2"
+  checkout main
+  commit id: "m1"
+  merge feature id: "merge"`}
+</Diagram>
+
+**3. Conflict.** Both branches modified the same lines incompatibly. Git
+can't decide and asks you.
+
+### Resolving conflicts
+
+When there's a conflict, Git pauses the merge and marks the files:
+
+```python
+def parse_amount(s):
+<<<<<<< HEAD
+    return float(s)
+=======
+    return float(s.strip()) if s else 0
+>>>>>>> feature/handle-nulls
+```
+
+- Between `<<<<<<< HEAD` and `=======` is your current branch's version.
+- Between `=======` and `>>>>>>>` is the version of the branch you're
+  merging in.
+
+Decide the final result. Edit the file (removing the markers):
+
+```python
+def parse_amount(s):
+    return float(s.strip()) if s else 0
+```
+
+Then mark the conflict resolved and finish the merge:
+
+```bash
+git add pipeline.py
+git commit       # Git pre-fills a merge message
+```
+
+To abort midway:
+
+```bash
+git merge --abort
+```
+
+You return to the pre-merge state.
+
+### Strategy: short, themed branches
+
+A common and very good practice:
+
+- **One branch per feature/bug.** Descriptive names: `feature/null-handling`,
+  `fix/api-timeout`, `chore/update-deps`.
+- **Short-lived**: ideally 1-3 days. The longer they live, the harder to
+  merge.
+- **Merge often.** If you finished something coherent, merge.
+
+A healthy repo:
+
+```
+main:    A---B---C---D---E---F   (always green, deployable)
+              \\         \\
+              feat/x    feat/y   (short, merged quickly)
+```
+
+A sick one:
+
+```
+main:    A---B---C---D
+              \\
+              feat/refactor-todo   (2 months, 80 commits, impossible to merge)
+```
+
+### Common mistakes
+
+- **Working directly on main**. You lose the isolation. Discipline: new
+  branch for each thing.
+- **Branching without updating main first**. You build on stale code. Start
+  with `git switch main && git pull` (lesson 6).
+- **Force-deleting an unmerged branch with `-D`** and losing the work.
+- **Resolving conflicts blindly**. Removing `<<<<` markers isn't resolving;
+  you must understand which version is correct.
+- **Massive merge after weeks of divergence**. Cascading conflicts. Hence
+  short branches.
+
+### Keep learning
+
+- [Pro Git §3 — Branching](https://git-scm.com/book/en/v2/Git-Branching-Branches-in-a-Nutshell)
+- [Learn Git Branching](https://learngitbranching.js.org/)
+- [git-scm: merge strategies](https://git-scm.com/docs/merge-strategies)
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-branches-merge-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'What is a Git branch, technically?',
+      options: [
+        'A copy of the repository',
+        'A movable pointer to a commit',
+        'A separate folder on disk',
+        'A remote fork',
+      ],
+      correctIndex: 1,
+      explanation: 'Just a lightweight pointer. That is why creating a branch is instantaneous.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'When does Git fast-forward a merge?',
+      options: [
+        'Always when you merge',
+        'When the destination did not advance after the branch was created',
+        'When there are conflicts',
+        'Only on main',
+      ],
+      correctIndex: 1,
+      explanation: 'If destination did not advance, the pointer just moves — no merge commit.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'A merge conflict means Git cannot auto-combine because both branches edited the same lines.',
+      correct: true,
+      explanation: 'Git pauses and asks you to decide.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Modern command to create and switch to a new branch.',
+      template: 'git switch ___ feature/x',
+      answer: '-c',
+      caseSensitive: true,
+      explanation: '-c (create) creates and switches in one step.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'In a conflict, what is between `<<<<<<< HEAD` and `=======`?',
+      options: [
+        'The version of the branch you are merging',
+        'The version of your current branch',
+        'The newest version',
+        'The unchanged version',
+      ],
+      correctIndex: 1,
+      explanation: 'HEAD = your current branch; below is what you are merging in.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="git-branches-exercise"
+  title="Fast-forward simulator"
+  description="Implement `canFastForward(target, source)` where each branch is an array of commits (strings). Fast-forward is possible if target is a prefix of source."
+  language="javascript"
+  starterCode={`function canFastForward(target, source) {
+  return false;
+}
+
+console.log(canFastForward(['A','B'], ['A','B','C','D']));
+console.log(canFastForward(['A','B','X'], ['A','B','C','D']));`}
+  solution={`function canFastForward(target, source) {
+  if (target.length > source.length) return false;
+  for (let i = 0; i < target.length; i++) {
+    if (target[i] !== source[i]) return false;
+  }
+  return true;
+}
+console.log(canFastForward(['A','B'], ['A','B','C','D']));
+console.log(canFastForward(['A','B','X'], ['A','B','C','D']));`}
+  hints={[
+    'target must be shorter or equal to source.',
+    'Each commit in target must appear at the same position in source.',
+  ]}
+  tests={[
+    {
+      description: 'clear prefix: true',
+      assert: 'canFastForward(["A","B"],["A","B","C"]) === true',
+    },
+    {
+      description: 'equal arrays: true',
+      assert: 'canFastForward(["A","B"],["A","B"]) === true',
+    },
+    {
+      description: 'commit divergence: false',
+      assert: 'canFastForward(["A","X"],["A","B","C"]) === false',
+    },
+    {
+      description: 'target longer: false',
+      assert: 'canFastForward(["A","B","C","D"],["A","B"]) === false',
+    },
+  ]}
+/>
+
+---
+
+Next lesson: **working with GitHub remotes** — push, pull, clone and SSH.

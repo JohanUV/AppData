@@ -1,0 +1,314 @@
+## Pull Requests y colaboración
+
+Hasta ahora has trabajado solo. En cuanto colabores con alguien — un equipo, un
+proyecto open source, un compañero de trabajo — empezarás a usar **Pull
+Requests** (PRs). Un PR es una propuesta de cambio: "aquí están unos commits
+que hice en una rama, por favor revísenlos y, si están bien, los integran a
+`main`".
+
+Los PRs son una invención de las plataformas (GitHub los popularizó; GitLab
+los llama "Merge Requests" — es lo mismo). Git no los conoce nativamente. Pero
+se han convertido en la manera estándar de mover código a producción.
+
+### El ciclo de vida de un PR
+
+<Diagram type="mermaid">
+{`flowchart TD
+  A[Creo rama feature/x] --> B[Hago commits]
+  B --> C[git push origin feature/x]
+  C --> D[Abro PR en GitHub<br/>feature/x → main]
+  D --> E[CI corre tests automáticos]
+  D --> F[Compañeros revisan<br/>dejan comentarios]
+  F --> G{¿Pidieron cambios?}
+  G -->|Sí| B
+  G -->|No| H[Merge a main]
+  H --> I[Borrar rama feature/x]`}
+</Diagram>
+
+### Crear un PR paso a paso
+
+Asumo que ya tienes el repo conectado a GitHub (lección 6).
+
+**1. Trabaja en una rama, no en main:**
+
+```bash
+git switch main
+git pull
+git switch -c feature/agregar-validacion
+# ... edita, agrega, commitea ...
+git push -u origin feature/agregar-validacion
+```
+
+**2. Abre el PR en GitHub:**
+
+GitHub detecta tu push reciente y te muestra un banner amarillo: "feature/...
+had recent pushes — Compare & pull request". Haz clic.
+
+Si no aparece, ve a **Pull requests** → **New pull request** → elige
+`base: main` ← `compare: feature/agregar-validacion`.
+
+**3. Llena la descripción.** Una buena descripción incluye:
+
+- **Qué** cambia (resumen de 1-2 líneas).
+- **Por qué** se necesita (contexto, ticket asociado).
+- **Cómo probarlo** (pasos para que el revisor verifique).
+- **Screenshots** si afecta UI.
+
+```markdown
+## Resumen
+Agrega validación de monto negativo en el endpoint /payments.
+
+## Contexto
+El ticket DATA-142 reportó que pagos con amount=-1 pasaban silenciosamente y
+contaminaban la agregación diaria.
+
+## Pruebas
+1. POST /payments con amount=-1 → debe responder 400.
+2. POST /payments con amount=10 → 200, como antes.
+3. Tests añadidos: payment_test.py::test_negative_amount_rejected.
+```
+
+**4. Asigna revisores y labels** (opcional pero útil): elige a la persona que
+mejor conoce esa parte del código.
+
+**5. Espera CI.** GitHub Actions, CircleCI o lo que use el repo correrá tests.
+Si fallan, te aparece un check rojo. Arregla y vuelve a pushear — el PR se
+actualiza solo, no hay que abrirlo de nuevo.
+
+### Iterar sobre comentarios
+
+Los revisores dejan comentarios. Puedes responder, marcar como resuelto, o
+hacer cambios:
+
+```bash
+# Editas localmente
+git add archivo.py
+git commit -m "fix: address review comments — use Decimal instead of float"
+git push
+```
+
+El push aparece automáticamente en el PR. No hace falta cerrar y reabrir
+nada. Cuando el revisor aprueba (✅ "Approve"), el botón verde "Merge pull
+request" se desbloquea.
+
+### Tres formas de mergear un PR
+
+GitHub ofrece tres estrategias:
+
+**1. Merge commit.** El PR se mergea con un merge commit que junta los dos
+historiales. Conserva todos los commits originales más uno extra. Histórico
+más rico pero más ruidoso.
+
+```
+main: A---B---C---D---M
+              \\     /
+              E-F-G    (commits del PR)
+```
+
+**2. Squash and merge.** Todos los commits del PR se "aplastan" en uno solo
+en main. Histórico lineal y limpio, pero pierdes la granularidad de los
+commits originales.
+
+```
+main: A---B---C---D---[E+F+G]
+```
+
+Lo más común en repos profesionales: el PR queda como un solo commit con el
+título del PR como mensaje, y el cuerpo lleva los detalles.
+
+**3. Rebase and merge.** Replica los commits del PR encima de main, sin
+crear un merge commit. Histórico lineal con todos los commits.
+
+```
+main: A---B---C---D---E'---F'---G'
+```
+
+¿Cuál usar? Squash es lo más práctico para equipos: un PR = un commit en main.
+Si trabajas en open source, sigue lo que diga el repo.
+
+### Tipos comunes de feedback en code review
+
+Cuando revisas un PR (o te lo revisan):
+
+- **Funcionalidad** — "esto rompe si la entrada es null".
+- **Performance** — "este loop es O(n²); con un Map sería O(n)".
+- **Estilo** — "convención del proyecto: snake_case en Python".
+- **Diseño** — "esta lógica debería estar en utils, no en el handler".
+- **Tests** — "falta cubrir el caso de error".
+- **Seguridad** — "esto deja una SQL injection abierta".
+- **Nit** (nitpick) — comentario menor que no bloquea: "typo en comentario".
+  Por convención, los marcas con "nit:" para que el autor sepa que es
+  opcional.
+
+### Conventional review etiquette
+
+- **Sé específico.** "no me gusta esta función" no ayuda. "esta función
+  podría devolver None y romper el caller; suggiero un Optional explícito"
+  sí.
+- **Cuestiona código, no personas.** "esto puede mejorarse así" no "tú
+  escribiste esto mal".
+- **Aprueba pronto cuando puedas.** Bloquear PRs por nits ralentiza al equipo.
+- **Si pides cambios grandes, ofrece alternativas.** No solo "no" — sugiere
+  el camino.
+
+### Forks vs branches
+
+Hay dos modelos:
+
+- **Branch model** (interno a un equipo): todos tienen permisos de push al
+  repo, trabajan en branches del mismo repo, abren PRs entre branches.
+- **Fork model** (open source): contribuyes desde tu propio fork del repo.
+  Clonas tu fork, pusheas allá, abres PR `tu-fork:feature → upstream:main`.
+
+El fork model es el estándar para open source porque los maintainers no van
+a darle permiso de push a cualquier desconocido en internet.
+
+### Errores comunes
+
+- **PRs gigantes**. 50 archivos, 2000 líneas, 5 features mezcladas. Imposible
+  de revisar bien. Regla: un PR debería revisarse en menos de 30 minutos.
+- **Descripción "fix"**. Sin contexto, el revisor tiene que adivinar. Invierte
+  3 minutos en una buena descripción y ahorras 30 al revisor.
+- **Marcar comentarios como "resolved" sin aplicar el cambio**. Honestidad:
+  si dices que arreglaste algo, arreglálo.
+- **Force-pushear en PR durante review**. Borra el contexto de los comentarios.
+  Mejor commits adicionales; el squash al final limpia.
+- **Aprobar sin leer**. "LGTM" sin haber leído es una señal de equipo que
+  no funciona.
+
+### Para seguir aprendiendo
+
+- [GitHub Docs — About pull requests](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests)
+- [Google's engineering practices: code review](https://google.github.io/eng-practices/review/) —
+  el documento canónico sobre cómo hacer code review.
+- [Conventional Comments](https://conventionalcomments.org/) — convención
+  para que tus comentarios sean accionables.
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-pr-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Qué es un Pull Request?',
+      options: [
+        'Un comando de Git',
+        'Una propuesta de cambio para integrar a otra rama, con revisión',
+        'Un archivo de configuración',
+        'Un tipo de commit',
+      ],
+      correctIndex: 1,
+      explanation: 'Es una primitiva de la plataforma (GitHub/GitLab), no de Git.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Después de pushear cambios adicionales a la rama del PR, hay que cerrar y reabrir el PR.',
+      correct: false,
+      explanation: 'No: cada push a la rama actualiza el PR automáticamente.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Squash and merge convierte el PR en:',
+      options: [
+        'Un merge commit con dos padres',
+        'Un solo commit en main que agrupa todos los del PR',
+        'Múltiples commits replicados encima',
+        'No genera commit',
+      ],
+      correctIndex: 1,
+      explanation: 'Aplasta los commits del PR en uno; histórico lineal y limpio en main.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q4',
+      prompt: 'En open source, ¿por qué se usa el fork model?',
+      options: [
+        'Es más rápido',
+        'Los maintainers no dan permisos de push a cualquier persona',
+        'No soporta branches',
+        'GitHub lo obliga',
+      ],
+      correctIndex: 1,
+      explanation: 'Trabajas en tu propio fork y abres PR al upstream; el maintainer revisa y mergea.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q5',
+      prompt: 'Ordena el flujo de un PR sano.',
+      steps: [
+        'Crear rama desde main',
+        'Hacer commits y push',
+        'Abrir PR con descripción',
+        'Atender comentarios de review',
+        'Merge cuando hay aprobación + CI verde',
+      ],
+      explanation: 'Rama → push → PR → review → merge.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="git-pr-exercise"
+  title="Validador de descripción de PR"
+  description="Implementa `validatePRDescription(text)` que devuelva un array con los problemas encontrados. Reglas: debe contener las secciones '## Resumen' y '## Pruebas'; el cuerpo total debe tener al menos 50 caracteres. Devuelve [] si está OK."
+  language="javascript"
+  starterCode={`function validatePRDescription(text) {
+  const problems = [];
+  // Tu código aquí
+  return problems;
+}
+
+console.log(validatePRDescription('## Resumen\\nx\\n## Pruebas\\ny'));
+console.log(validatePRDescription('todo bien'));`}
+  solution={`function validatePRDescription(text) {
+  const problems = [];
+  if (typeof text !== 'string' || text.length < 50) {
+    problems.push('Descripción demasiado corta (mínimo 50 caracteres).');
+  }
+  if (!/^## Resumen/m.test(text)) {
+    problems.push('Falta sección "## Resumen".');
+  }
+  if (!/^## Pruebas/m.test(text)) {
+    problems.push('Falta sección "## Pruebas".');
+  }
+  return problems;
+}
+console.log(validatePRDescription('## Resumen\\nx\\n## Pruebas\\ny'));
+console.log(validatePRDescription('todo bien'));`}
+  hints={[
+    'Usa regex con flag /m para que ^ matchee inicio de línea.',
+    'Reúne los problemas en un array y devuélvelo al final.',
+  ]}
+  tests={[
+    {
+      description: 'descripción válida → array vacío',
+      assert: 'validatePRDescription("## Resumen\\nesto cambia X y Y para arreglar Z bla bla bla.\\n## Pruebas\\nrun pnpm test").length === 0',
+    },
+    {
+      description: 'falta secciones → reporta',
+      assert: 'validatePRDescription("texto suelto sin secciones pero suficientemente largo para pasar el mínimo de caracteres del validador").length >= 2',
+    },
+    {
+      description: 'muy corta → reporta',
+      assert: 'validatePRDescription("x").length >= 1',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección, la última del módulo: **buenas prácticas, mensajes de commit
+y `.gitignore`** — los detalles que te hacen pasar de "sé Git" a "trabajo con
+Git profesionalmente".

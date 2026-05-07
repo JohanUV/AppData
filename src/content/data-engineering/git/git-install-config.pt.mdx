@@ -1,0 +1,261 @@
+## Instalação e configuração inicial
+
+Antes de fazer commits você precisa do Git instalado e precisa dizer a ele
+quem você é. Parece óbvio, mas é onde 80% dos iniciantes tropeçam: instalam
+o Git, fazem um commit, e aparece um autor `unknown@DESKTOP-XYZ` no
+histórico. Isso não é fácil de remover depois. Melhor configurar bem desde o
+início.
+
+Nesta lição vamos:
+
+1. Instalar o Git no seu sistema operacional.
+2. Configurar identidade (nome, e-mail).
+3. Escolher editor padrão.
+4. Verificar tudo com `git --version`.
+
+### Instalação por SO
+
+**Windows.** Baixe o instalador oficial em
+[git-scm.com/download/win](https://git-scm.com/download/win). É um `.exe`
+que inclui o Git Bash, um terminal estilo Linux que você vai precisar
+(PowerShell também funciona, mas Git Bash é mais próximo do ecossistema
+Unix onde o Git nasceu). Durante a instalação deixe quase tudo em padrão,
+com dois detalhes:
+
+- **Default editor**: escolha um que você conheça. VS Code é uma boa
+  opção.
+- **Line endings**: marque "Checkout Windows-style, commit Unix-style". O
+  Git normaliza quebras de linha para que repos não fiquem cheios de
+  diffs fantasma quando você colaborar com gente de macOS/Linux.
+
+**macOS.** Três caminhos:
+
+```bash
+xcode-select --install      # Xcode Command Line Tools
+brew install git            # Homebrew (mais atualizado)
+# Ou instalador oficial em git-scm.com
+```
+
+**Linux.** Use o gerenciador de pacotes:
+
+```bash
+sudo apt install git         # Debian / Ubuntu
+sudo dnf install git         # Fedora / RHEL
+sudo pacman -S git           # Arch
+```
+
+### Verificar a instalação
+
+Abra seu terminal (Git Bash no Windows, Terminal no macOS, qualquer
+emulador no Linux):
+
+```bash
+git --version
+```
+
+Você verá algo como `git version 2.45.2`. Qualquer ≥ 2.30 está bom. Se
+aparecer "command not found", reinicie o terminal. Se persistir, verifique
+se a instalação adicionou Git ao PATH.
+
+### Configure sua identidade
+
+Cada commit carrega um nome e um e-mail. Não são autenticados (Git confia
+em você localmente), mas ficam gravados no histórico para sempre. Configure
+os globais uma vez:
+
+<AnnotatedCode
+  language="bash"
+  filename="terminal"
+  annotations={[
+    {
+      match: '--global',
+      title: 'O que faz --global?',
+      body: 'Salva a config em ~/.gitconfig (seu home), aplicada a todos os repos. Sem --global afeta só o repo atual. Ideal: --global para identidade, sem flag para ajustes específicos do projeto.',
+    },
+    {
+      match: 'user.email',
+      title: 'Use o e-mail certo',
+      body: 'Para contribuir no GitHub, deve ser o mesmo verificado lá. Caso contrário seus commits aparecem "anônimos" no perfil. Você pode usar o e-mail no-reply do GitHub se quiser privacidade.',
+    },
+    {
+      match: 'core.editor',
+      title: 'Editor para mensagens longas',
+      body: 'Quando você roda git commit sem -m, o Git abre este editor para a mensagem. "code --wait" faz o VS Code bloquear o terminal até você fechar o arquivo.',
+    },
+    {
+      match: 'init.defaultBranch',
+      title: 'Branch inicial',
+      body: 'Por convenção moderna, "main" substituiu "master". GitHub, GitLab e a comunidade já usam main por padrão.',
+    },
+  ]}
+>
+{`git config --global user.name "Seu Nome"
+git config --global user.email "voce@email.com"
+git config --global core.editor "code --wait"
+git config --global init.defaultBranch main`}
+</AnnotatedCode>
+
+Para confirmar:
+
+```bash
+git config --list --global
+```
+
+### Configurações úteis adicionais
+
+```bash
+git config --global color.ui auto
+git config --global alias.st status
+git config --global alias.co checkout
+git config --global alias.br branch
+git config --global alias.lg "log --oneline --graph --all"
+```
+
+Com isso, `git st` equivale a `git status`, e `git lg` mostra o histórico
+visual numa linha por commit.
+
+### Onde fica a config
+
+O Git tem **três níveis** de configuração, em ordem de precedência:
+
+1. **System** (`/etc/gitconfig`) — para todos os usuários. Raramente
+   tocado.
+2. **Global** (`~/.gitconfig`) — para seu usuário. Sua identidade vai
+   aqui.
+3. **Local** (`.git/config` dentro do repo) — para um projeto específico.
+
+Se trabalho e conta pessoal usam e-mails diferentes, sobrescreva por repo:
+
+```bash
+cd ~/projetos/do-trabalho
+git config user.email "voce@empresa.com"
+```
+
+Isso afeta só esse repo, deixando o global intacto.
+
+### Erros comuns
+
+- **Esquecer `--global`** e depois se perguntar por que cada repo pede o
+  nome de novo. Se está configurando identidade pessoal, quase sempre quer
+  `--global`.
+- **E-mail diferente do GitHub**: seus commits não aparecem ligados ao
+  perfil. Sempre o mesmo e-mail verificado.
+- **Notepad como editor padrão no Windows**: mata mensagens multilinha
+  com encoding estranho. Prefira `code --wait`, `nano` ou `vim`.
+
+### Para continuar aprendendo
+
+- [Pro Git §1.6 — First-Time Git Setup](https://git-scm.com/book/en/v2/Getting-Started-First-Time-Git-Setup)
+- [Conventional Commits](https://www.conventionalcommits.org/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-install-config-quiz"
+  xpReward={50}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'O que faz `git config --global user.email`?',
+      options: [
+        'Muda o e-mail só no repo atual',
+        'Muda o e-mail para todos os repos do usuário',
+        'Muda o e-mail no GitHub.com',
+        'Verifica se o e-mail está autenticado',
+      ],
+      correctIndex: 1,
+      explanation: '`--global` escreve em ~/.gitconfig, que cobre todos os repos do usuário.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Trabalho e pessoal usam e-mails diferentes. O que fazer?',
+      options: [
+        'Mudar --global toda vez que troca de projeto',
+        'Configurar --global com pessoal e override sem --global em repos do trabalho',
+        'Usar sempre o mesmo e-mail',
+        'Impossível, reinstalar Git',
+      ],
+      correctIndex: 1,
+      explanation: 'A config local do repo sobrescreve a global. Abordagem padrão.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Sem `init.defaultBranch`, repos novos podem ficar em `master` em versões antigas do Git.',
+      correct: true,
+      explanation: 'Git ≥ 2.28 suporta isso; antes você renomeava após `git init`.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Comando para ver toda sua configuração global.',
+      template: 'git config --list --___',
+      answer: 'global',
+      caseSensitive: false,
+      explanation: '`git config --list --global` lista variáveis do nível global.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Por que "main" é preferida sobre "master" como branch principal?',
+      options: [
+        'É mais curta',
+        'Convenção moderna inclusiva, adotada por GitHub/GitLab',
+        'master não funciona em Linux',
+        'Só "main" suporta merge',
+      ],
+      correctIndex: 1,
+      explanation: 'Mudança cultural em 2020-2021; padrão em plataformas e livros novos.',
+    },
+  ]}
+/>
+
+---
+
+## Exercício prático
+
+<Exercise
+  id="git-config-exercise"
+  title="Construtor de comandos config"
+  description="Implemente uma função que constrói o comando git config a partir de chave e valor, adicionando --global se a chave for de identidade."
+  language="javascript"
+  starterCode={`function buildConfigCmd(key, value) {
+  return '';
+}
+
+const a = buildConfigCmd('user.email', 'me@x.com');
+const b = buildConfigCmd('color.ui', 'auto');
+console.log(a);
+console.log(b);`}
+  solution={`function buildConfigCmd(key, value) {
+  const flag = key.startsWith('user.') ? '--global ' : '';
+  return \`git config \${flag}\${key} "\${value}"\`;
+}
+const a = buildConfigCmd('user.email', 'me@x.com');
+const b = buildConfigCmd('color.ui', 'auto');
+console.log(a);
+console.log(b);`}
+  hints={[
+    'String.prototype.startsWith te diz se a chave começa com "user.".',
+    'Use template literals para montar o string final.',
+  ]}
+  tests={[
+    {
+      description: 'user.email leva --global',
+      assert: 'buildConfigCmd("user.email","x@y.com") === \'git config --global user.email "x@y.com"\'',
+    },
+    {
+      description: 'color.ui sem --global',
+      assert: 'buildConfigCmd("color.ui","auto") === \'git config color.ui "auto"\'',
+    },
+  ]}
+/>
+
+---
+
+Próxima lição: **criar seu primeiro repositório** e fazer um commit real.

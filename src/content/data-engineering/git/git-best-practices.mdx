@@ -1,0 +1,431 @@
+## Buenas prácticas y .gitignore
+
+Cierras este módulo con los hábitos que te separan del usuario casual. Saber
+los comandos es 30% del trabajo; el otro 70% es disciplina al usarlos: qué
+mensaje pones, qué archivos ignoras, cuándo ramificas. Esta lección recoge las
+prácticas más rentables — las que tu yo del futuro y los revisores de tus PRs
+te van a agradecer.
+
+### Mensajes de commit que valen la pena
+
+Un commit es una pequeña unidad de cambio + un mensaje. El **mensaje es para
+humanos**: el `git log` que tu equipo va a leer dentro de 6 meses cuando algo
+se rompa.
+
+**Reglas mínimas:**
+
+1. **Primera línea ≤ 72 caracteres.** El subject. Lo que ves en `git log
+   --oneline`. Imperativo, en presente: "agrega" no "agregando" ni "agregó".
+2. **Línea en blanco** entre subject y cuerpo (si hay cuerpo).
+3. **Cuerpo opcional** explicando el porqué cuando no es obvio. Las líneas a
+   ~72 caracteres también.
+4. **Prefijo semántico** (Conventional Commits): `feat`, `fix`, `docs`,
+   `refactor`, `test`, `chore`, `perf`, `build`, `ci`.
+
+Ejemplo completo:
+
+```
+fix(pipeline): handle null amount in payments aggregation
+
+Stripe webhook can send amount=null when a charge is voided
+mid-processing. Previously this crashed the daily aggregation
+with TypeError. Now we coalesce null to 0 and log a warning.
+
+Refs: DATA-142
+```
+
+¿Por qué importa? Porque dentro de 6 meses, cuando estés depurando un bug,
+vas a hacer:
+
+```bash
+git log --oneline --grep="payment"
+# fix(pipeline): handle null amount in payments aggregation
+# feat(pipeline): add payments aggregation
+# ...
+```
+
+Y verás directamente qué buscar. Sin convención, ese log es ilegible.
+
+### Commits atómicos
+
+Un commit debe representar **una idea coherente**. Si tu mensaje tiene "y",
+es señal de que son dos commits distintos.
+
+Mal:
+
+```
+fix bug + add feature + update README
+```
+
+Bien (3 commits):
+
+```
+fix(api): retry on 5xx with exponential backoff
+feat(metrics): add request latency histogram
+docs: update setup instructions for new metrics
+```
+
+Beneficios:
+- `git revert` puede deshacer un cambio sin tocar los otros.
+- `git bisect` (debugging por bisección) localiza qué commit introdujo un bug.
+- El review es focalizado.
+
+### .gitignore: qué nunca debe entrar al repo
+
+`.gitignore` es un archivo (uno o más, pueden anidarse en subcarpetas) donde
+listas patrones que Git debe **ignorar completamente**. Archivos que cumplan
+esos patrones no aparecen en `git status` ni los puedes `add` por accidente.
+
+Categorías de archivos a ignorar:
+
+**1. Generados / builds:**
+```
+dist/
+build/
+out/
+*.pyc
+__pycache__/
+node_modules/
+.next/
+target/
+```
+
+**2. Archivos de IDE / sistema:**
+```
+.vscode/        # solo si NO compartes config; algunos equipos sí versionan
+.idea/
+.DS_Store       # macOS
+Thumbs.db       # Windows
+```
+
+**3. Logs y datos temporales:**
+```
+*.log
+logs/
+*.tmp
+.cache/
+```
+
+**4. Datos brutos / outputs (Data Engineering):**
+```
+data/raw/
+data/processed/
+*.parquet
+*.csv
+*.xlsx
+```
+
+**5. Secretos y configuración local:**
+```
+.env
+.env.local
+*.pem
+*.key
+secrets.json
+config.local.yaml
+```
+
+Los secretos son **lo más crítico**. Una clave de AWS commiteada a un repo
+público se descubre en menos de 5 minutos por bots que vigilan GitHub. Si
+pasa, considera la clave comprometida y rótala inmediatamente — no basta con
+borrar el commit.
+
+<AnnotatedCode
+  language="bash"
+  filename=".gitignore"
+  annotations={[
+    {
+      match: '__pycache__/',
+      title: 'Bytecode de Python',
+      body: 'Cuando Python ejecuta un módulo, genera archivos .pyc en __pycache__/. No aportan al repo: se regeneran solos. Versionarlos infla el repo y trae conflictos en distintas versiones de Python.',
+    },
+    {
+      match: '.env',
+      title: 'Secretos por entorno',
+      body: 'Convención del ecosistema Node/Python para almacenar variables de entorno (DATABASE_URL, API_KEY, etc). Cada desarrollador tiene su .env local; lo que se versiona es .env.example con placeholders.',
+    },
+    {
+      match: 'data/raw/',
+      title: 'Datos brutos',
+      body: 'En Data Engineering, los datos NO viven en Git. Pueden ser GBs, cambian rápido, contienen PII. Deben estar en S3/GCS/lakehouse. El repo solo contiene el CÓDIGO que los procesa.',
+    },
+    {
+      match: '!.env.example',
+      title: 'Negar un patrón',
+      body: 'El prefijo "!" excluye un patrón anteriormente ignorado. Aquí permite que .env.example sí se versione (es el template público), aunque .env (el real) esté ignorado.',
+    },
+  ]}
+>
+{`# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node
+node_modules/
+dist/
+
+# Datos brutos (NO versionar — usar S3/GCS)
+data/raw/
+data/processed/
+
+# Secretos
+.env
+.env.local
+!.env.example
+*.pem`}
+</AnnotatedCode>
+
+### Plantillas de .gitignore
+
+GitHub mantiene plantillas oficiales por lenguaje:
+
+```bash
+# En el repo:
+curl https://raw.githubusercontent.com/github/gitignore/main/Python.gitignore > .gitignore
+```
+
+Existen para Python, Node, Java, Go, etc. Empieza por una plantilla y agrega
+lo específico de tu proyecto.
+
+### Si ya commiteaste algo que no debías
+
+Caso común: pusheaste un `.env` con una clave. Pasos:
+
+1. **Rota la credencial inmediatamente** en el provider (AWS, Stripe, etc).
+   Asume que ya está comprometida.
+2. Agrega `.env` al `.gitignore`.
+3. Quita el archivo del repo (sin borrarlo localmente):
+   ```bash
+   git rm --cached .env
+   git commit -m "chore: remove .env from tracking"
+   git push
+   ```
+4. Si quieres borrarlo del **historial completo** (no solo del último commit),
+   usa `git filter-repo` o `BFG Repo Cleaner`. Es más invasivo y reescribe
+   historia — coordínalo con el equipo.
+
+Aun después de borrarlo del histórico, considera la clave comprometida. El
+paso 1 es no negociable.
+
+### Otras buenas prácticas
+
+- **Nombra ramas con prefijo y kebab-case**: `feature/null-handling`,
+  `fix/api-timeout`, `chore/upgrade-deps`. Algunos equipos usan
+  `tu-usuario/feature-x` para identificar autoría.
+- **Rebasea ramas largas frecuentemente** sobre `main` para evitar conflictos
+  acumulados:
+  ```bash
+  git switch feature/long-running
+  git fetch origin
+  git rebase origin/main
+  ```
+- **Una vida laboral entera con `git pull --rebase` por defecto**:
+  ```bash
+  git config --global pull.rebase true
+  ```
+  Mantiene el histórico lineal en lugar de generar merge commits cada vez que
+  haces pull.
+- **No commits con WIP en `main`**. Usa una rama o, si tienes que pausar
+  rápido, `git stash`.
+- **Activa signed commits** si tu organización lo requiere (firma con GPG o
+  SSH). Probacaron que el commit fue autorizado por ti.
+
+### Errores comunes
+
+- **Repos con `data/`, `node_modules/` y `__pycache__/` versionados**. El repo
+  pesa 2GB, los pulls son lentos, los diffs son ilegibles.
+- **Commits con mensaje "wip" o "fix"**. No transmiten información. Equivalen
+  a no tener mensaje.
+- **`force-push` a `main`**. Borra trabajo de otros sin avisar. Aunque sea
+  "tu" repo, no lo hagas — vas a olvidar y luego pasa.
+- **Mantener una rama de 6 meses sin rebasear**. Mergearla es un infierno de
+  conflictos. Ramas cortas, siempre.
+- **Borrar `.git/`**. Pierdes todo el histórico. No hay vuelta atrás. Sí,
+  pasa más de lo que crees.
+
+### Para seguir aprendiendo
+
+- [Conventional Commits — spec completa](https://www.conventionalcommits.org/)
+- [GitHub gitignore templates](https://github.com/github/gitignore)
+- [Atlassian — Tutorials → Best practices](https://www.atlassian.com/git/tutorials/comparing-workflows)
+- [Git filter-repo (limpiar historia)](https://github.com/newren/git-filter-repo)
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-best-practices-quiz"
+  xpReward={80}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Por qué los datos brutos no van al repo?',
+      options: [
+        'Git no soporta archivos binarios',
+        'Pueden ser muy grandes, cambian rápido y contener PII; viven en S3/GCS',
+        'GitHub los borra automáticamente',
+        'Se versionan, pero solo en formato CSV',
+      ],
+      correctIndex: 1,
+      explanation: 'El repo lleva CÓDIGO; los datos van en almacenamiento adecuado.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Si commiteas y pusheas un .env con un API key, basta con borrar el archivo del repo.',
+      correct: false,
+      explanation: 'La clave ya quedó en el histórico (y los bots la indexaron). Hay que rotarla en el provider.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'En .gitignore, ¿qué hace `!archivo.example`?',
+      options: [
+        'Lo borra al hacer commit',
+        'Lo excluye del ignore (lo permite versionar) aunque coincida con un patrón anterior',
+        'Lo marca como crítico',
+        'Es un comentario',
+      ],
+      correctIndex: 1,
+      explanation: 'El prefijo ! niega un patrón ignorado, útil para versionar templates públicos.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Comando para sacar un archivo del tracking sin borrarlo localmente.',
+      template: 'git rm ___ archivo',
+      answer: '--cached',
+      caseSensitive: false,
+      explanation: 'git rm --cached saca del staging/repo pero deja el archivo en disco.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: '¿Cuál es un buen prefijo de Conventional Commits para un cambio de documentación?',
+      options: ['feat', 'fix', 'docs', 'wip'],
+      correctIndex: 2,
+      explanation: 'docs: cambios solo en documentación (README, comentarios, etc).',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="git-best-practices-exercise"
+  title="Filtrar archivos por .gitignore"
+  description="Implementa `shouldIgnore(path, patterns)` que devuelva true si el path coincide con alguno de los patterns simples. Soporta sufijo / para directorios y * como wildcard de cualquier cosa que no contenga /."
+  language="javascript"
+  starterCode={`function shouldIgnore(path, patterns) {
+  // path: 'src/__pycache__/foo.pyc'
+  // patterns: ['__pycache__/', '*.log', '.env']
+  return false;
+}
+
+console.log(shouldIgnore('src/__pycache__/foo.pyc', ['__pycache__/']));
+console.log(shouldIgnore('app.log', ['*.log']));
+console.log(shouldIgnore('app.py', ['*.log']));`}
+  solution={`function shouldIgnore(path, patterns) {
+  for (const p of patterns) {
+    if (p.endsWith('/')) {
+      const dirName = p.slice(0, -1);
+      if (path.split('/').includes(dirName)) return true;
+    } else if (p.startsWith('*.')) {
+      const ext = p.slice(1);
+      if (path.endsWith(ext)) return true;
+    } else {
+      if (path === p || path.endsWith('/' + p)) return true;
+    }
+  }
+  return false;
+}
+console.log(shouldIgnore('src/__pycache__/foo.pyc', ['__pycache__/']));
+console.log(shouldIgnore('app.log', ['*.log']));
+console.log(shouldIgnore('app.py', ['*.log']));`}
+  hints={[
+    'Para patrones que terminan en /, busca si alguna parte del path es ese directorio.',
+    'Para *.ext, basta con path.endsWith(".ext").',
+    'Para nombres exactos como .env, compara o verifica que termine en /.env.',
+  ]}
+  tests={[
+    {
+      description: 'directorio anidado',
+      assert: 'shouldIgnore("a/b/__pycache__/c.pyc", ["__pycache__/"]) === true',
+    },
+    {
+      description: 'extensión wildcard',
+      assert: 'shouldIgnore("logs/app.log", ["*.log"]) === true',
+    },
+    {
+      description: 'archivo exacto',
+      assert: 'shouldIgnore(".env", [".env"]) === true',
+    },
+    {
+      description: 'no match',
+      assert: 'shouldIgnore("src/main.py", ["*.log", "node_modules/"]) === false',
+    },
+  ]}
+/>
+
+---
+
+## Mini-proyecto del módulo
+
+<Project
+  id="git-module-project"
+  title="Tu primer repo público en GitHub"
+  description="Aplica todo lo del módulo creando un repo público real con su workflow básico. Es un proyecto real que puedes enseñar después en una entrevista."
+  xpReward={300}
+  steps={[
+    {
+      id: 's1',
+      title: 'Crea el repo local con un proyecto pequeño',
+      description: 'Cualquier cosa: un script Python que descarga un CSV de una API pública (NASA, Pokémon, lo que quieras) y lo guarda como Parquet. Mínimo 2 archivos.',
+      successCriteria: 'Tienes una carpeta con git init, al menos 3 commits con mensajes Conventional, y el código compila/corre.',
+    },
+    {
+      id: 's2',
+      title: 'Configura un .gitignore robusto',
+      description: 'Empieza por la plantilla oficial de Python (https://github.com/github/gitignore/blob/main/Python.gitignore) y agrega data/raw/, *.parquet, .env.',
+      successCriteria: 'git status no muestra archivos ruido (caches, .env, data brutos).',
+      resources: [{ label: 'Plantillas gitignore', href: 'https://github.com/github/gitignore' }],
+    },
+    {
+      id: 's3',
+      title: 'Sube el repo a GitHub vía SSH',
+      description: 'Crea el repo en github.com (público), agrega remote, configura SSH y haz tu primer push.',
+      successCriteria: 'El repo aparece en tu perfil con commits firmados a tu email correcto.',
+    },
+    {
+      id: 's4',
+      title: 'Trabaja una feature en una rama y abre PR',
+      description: 'Crea una rama (feature/agregar-tests), agrega un test pequeño, push, y abre un PR a main desde la UI de GitHub. Llena descripción con secciones Resumen y Pruebas.',
+      successCriteria: 'PR abierto con descripción completa.',
+    },
+    {
+      id: 's5',
+      title: 'Mergea el PR (squash and merge) y borra la rama',
+      description: 'Tras revisar tu propio PR (sé crítico contigo), haz squash and merge desde GitHub. Borra la rama remota (botón en el PR) y la local con git branch -d.',
+      successCriteria: 'main tiene un commit nuevo (squash); la rama feature ya no existe.',
+    },
+    {
+      id: 's6',
+      title: 'Bonus: README profesional',
+      description: 'Escribe un README.md decente: qué hace el proyecto, cómo correrlo, requisitos, ejemplo de uso. Es la cara pública del repo.',
+      successCriteria: 'README explica el proyecto a alguien que llega de cero.',
+      resources: [{ label: 'Awesome README', href: 'https://github.com/matiassingers/awesome-readme' }],
+    },
+  ]}
+/>
+
+---
+
+¡Felicitaciones por completar el Módulo 0! Acabas de desbloquear el **logro
+"Versionado al fin"**. Próximo módulo: **SQL Avanzado** — la herramienta #1
+del Data Engineer.

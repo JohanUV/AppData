@@ -1,0 +1,311 @@
+## Your first repository
+
+You have Git installed and configured. Time to create your first repository,
+understand what that `.git` folder is, and make a meaningful first commit.
+This lesson is 100% hands-on: open your terminal and follow along. Reading
+about Git doesn't work — you have to touch it.
+
+### Creating the repo: two paths
+
+Two ways to start a repo: **initialize one from scratch** or **clone an
+existing one**. Today we do the first.
+
+```bash
+mkdir my-first-pipeline
+cd my-first-pipeline
+git init
+```
+
+`git init` doesn't make much noise but creates a hidden folder named `.git/`
+in your current directory. That folder **is** the repository. It contains
+all history, branches, local config, and objects (blobs, trees, commits).
+Delete it and you lose all versioning: you have a normal folder again.
+
+```bash
+ls -la .git
+```
+
+You'll see `HEAD`, `config`, `objects/`, `refs/`. Don't touch by hand yet —
+Git writes them for you.
+
+### Working directory, staging, repo: the trinity
+
+Recap from lesson 1, now in action:
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[1. Edit file<br/>Working] -->|2. git add| B[Staging area]
+  B -->|3. git commit| C[Repository<br/>.git]`}
+</Diagram>
+
+Walk through the full cycle:
+
+```bash
+echo "# My first pipeline" > README.md
+echo "print('hello data eng')" > pipeline.py
+```
+
+Ask Git what it sees:
+
+```bash
+git status
+```
+
+```
+On branch main
+
+No commits yet
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+        README.md
+        pipeline.py
+```
+
+"Untracked" means Git **knows they exist** but is not tracking them. You have
+to explicitly tell it to.
+
+### Move files to staging
+
+```bash
+# Add a specific file
+git add README.md
+
+# Or add everything in the current directory
+git add .
+```
+
+`git status` now shows the files in green under "Changes to be committed".
+They're in **staging**: ready for the next commit but not yet sealed.
+
+<Callout type="warning" title="Careful with `git add .`">
+  It's convenient but dangerous: it stages EVERYTHING modified in the current
+  directory, including stuff you may not want (secrets, logs, builds). Get
+  used to `git add specific-file.py` or `git add -p` to review hunk by hunk.
+</Callout>
+
+### The first commit
+
+```bash
+git commit -m "feat: first commit with README and base script"
+```
+
+Output:
+
+```
+[main (root-commit) e8a91b2] feat: first commit with README and base script
+ 2 files changed, 2 insertions(+)
+ create mode 100644 README.md
+ create mode 100644 pipeline.py
+```
+
+You just created your first **snapshot**. That hash `e8a91b2` (first 7 chars
+of the real SHA) is the unique commit ID. Change one byte and the next
+commit's hash is completely different.
+
+### Inspecting history
+
+```bash
+git log
+```
+
+```
+commit e8a91b2... (HEAD -> main)
+Author: Your Name <you@email.com>
+Date:   Tue Mar 12 10:30:00 2026 +0000
+
+    feat: first commit with README and base script
+```
+
+Three key bits per commit: hash, author + date, message.
+
+```bash
+git log --oneline
+# e8a91b2 (HEAD -> main) feat: first commit with README and base script
+```
+
+### Make a second commit
+
+Edit `pipeline.py`:
+
+```bash
+echo "print('cleaning data')" >> pipeline.py
+git status      # pipeline.py shows as "modified"
+git diff        # shows exactly what changed
+git add pipeline.py
+git commit -m "feat: add cleanup step"
+git log --oneline
+# 3f12c4a (HEAD -> main) feat: add cleanup step
+# e8a91b2 feat: first commit with README and base script
+```
+
+You now have history. Each commit is a point you can return to.
+
+### Anatomy of a good commit message
+
+There are conventions, but the minimum is:
+
+- **50 chars in the first line**, imperative: "add", "fix", "remove" (not
+  "adding" or "added").
+- **Semantic prefix** optional but recommended: `feat:`, `fix:`, `docs:`,
+  `refactor:`, `test:`, `chore:`. Future-you debugging will thank you.
+- **Optional body** to explain why when not obvious. Separated from the first
+  line by a blank line.
+
+Bad:
+
+```
+update
+```
+
+Good:
+
+```
+fix(pipeline): handle null amount in payments aggregation
+
+The Stripe webhook can send amount=null when a charge is voided
+mid-processing. Previously this crashed the daily aggregation
+with TypeError. Now we coalesce null to 0 and log a warning.
+```
+
+### Common mistakes
+
+- **Forgetting `git add` before `git commit`**. The commit includes what's in
+  staging, not working. If you modified something and didn't add, the commit
+  doesn't carry that change.
+- **Committing secrets** (API keys, passwords) in the first commit. Once in
+  history, removing them is painful (covered in lesson 8). Better: configure
+  `.gitignore` from day 1.
+- **A commit with 50 unrelated modified files**. Then you can't revert just
+  bug X. Small, themed commits.
+- **Thinking `git init` deletes folder contents**. It does not — it only adds
+  `.git/`. Your files are intact.
+
+### Keep learning
+
+- [Conventional Commits](https://www.conventionalcommits.org/) — the
+  `feat:`, `fix:` format teams use.
+- [git-scm: git-init](https://git-scm.com/docs/git-init).
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-first-repo-quiz"
+  xpReward={60}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'What does `git init` do?',
+      options: [
+        'Creates a new project folder',
+        'Creates the hidden .git/ subfolder with repo metadata',
+        'Uploads the project to GitHub',
+        'Initializes every repo on the system',
+      ],
+      correctIndex: 1,
+      explanation: 'Turns a normal folder into a Git repo by adding .git/.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'An "untracked" file means Git is versioning it.',
+      correct: false,
+      explanation: 'Untracked = Git sees it but does NOT track it. To start tracking, you git add.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Which is the correct order to record a change?',
+      options: [
+        'commit → add → push',
+        'edit → add → commit',
+        'add → edit → commit',
+        'commit → edit → push',
+      ],
+      correctIndex: 1,
+      explanation: 'Edit, stage with add, seal with commit.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Command for compact log, one line per commit.',
+      template: 'git log --___',
+      answer: 'oneline',
+      caseSensitive: false,
+      explanation: 'git log --oneline is the most-used compact view.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Which is a good commit message?',
+      options: [
+        '"update"',
+        '"changes"',
+        '"feat(api): retry on 5xx with exponential backoff"',
+        '"various fixes"',
+      ],
+      correctIndex: 2,
+      explanation: 'Specific, imperative, semantic prefix, clear scope.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="git-first-repo-exercise"
+  title="Commit message validator"
+  description="Implement `isValidCommitMessage(msg)` that checks: (1) not empty, (2) first line ≤ 72 chars, (3) starts with one of the prefixes: feat, fix, docs, refactor, test, chore."
+  language="javascript"
+  starterCode={`function isValidCommitMessage(msg) {
+  return false;
+}
+
+console.log(isValidCommitMessage('feat: add aggregation step'));
+console.log(isValidCommitMessage('update'));
+console.log(isValidCommitMessage(''));`}
+  solution={`function isValidCommitMessage(msg) {
+  if (!msg || typeof msg !== 'string') return false;
+  const firstLine = msg.split('\\n')[0];
+  if (firstLine.length === 0 || firstLine.length > 72) return false;
+  const prefixes = ['feat', 'fix', 'docs', 'refactor', 'test', 'chore'];
+  return prefixes.some((p) => firstLine.startsWith(p + ':') || firstLine.startsWith(p + '('));
+}
+console.log(isValidCommitMessage('feat: add aggregation step'));
+console.log(isValidCommitMessage('update'));
+console.log(isValidCommitMessage(''));`}
+  hints={[
+    'Use msg.split("\\n")[0] to keep just the first line.',
+    'Array.some helps check several prefixes.',
+    'A valid prefix can carry a scope: feat(api): ...',
+  ]}
+  tests={[
+    {
+      description: 'feat: ... is valid',
+      assert: 'isValidCommitMessage("feat: add aggregation step") === true',
+    },
+    {
+      description: 'empty string invalid',
+      assert: 'isValidCommitMessage("") === false',
+    },
+    {
+      description: '"update" without prefix is invalid',
+      assert: 'isValidCommitMessage("update") === false',
+    },
+    {
+      description: 'feat with scope is valid',
+      assert: 'isValidCommitMessage("feat(api): retry") === true',
+    },
+  ]}
+/>
+
+---
+
+Next lesson: deeper into the **day-to-day commands** — status, add, commit,
+log, diff — the ones you type 100 times a day.

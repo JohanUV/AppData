@@ -1,0 +1,333 @@
+## Tu primer repositorio
+
+Ya tienes Git instalado y configurado. Toca crear tu primer repositorio,
+entender qué carajo es esa carpeta `.git` que aparece y hacer tu primer commit
+con sentido. Esta lección es 100% práctica: abre tu terminal y hazlo en
+paralelo conmigo. Aprender Git leyendo no funciona — hay que tocarlo.
+
+### Crear el repo: dos caminos
+
+Hay dos formas de empezar un repositorio: **inicializar uno desde cero** o
+**clonar uno existente**. Hoy hacemos el primero.
+
+```bash
+# Crea una carpeta nueva y entra en ella
+mkdir mi-primer-pipeline
+cd mi-primer-pipeline
+
+# Inicializa el repo
+git init
+```
+
+`git init` no hace mucho ruido pero por debajo crea una carpeta oculta llamada
+`.git/` dentro de tu directorio actual. Esa carpeta es **el repositorio**.
+Contiene todo el histórico, las ramas, configuraciones locales y los objetos
+(blobs, trees, commits). Si la borras, se pierde todo el versionado: vuelves a
+tener una carpeta normal.
+
+```bash
+# En Linux/macOS: ver el contenido (en Windows con Git Bash igual)
+ls -la .git
+```
+
+Verás archivos como `HEAD`, `config`, `objects/`, `refs/`. No los toques a mano
+todavía — Git los escribe por ti.
+
+### Working directory, staging, repo: la trinidad
+
+Repaso rápido de la lección 1, ahora aplicado:
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[1. Editas archivo<br/>Working] -->|2. git add| B[Staging area]
+  B -->|3. git commit| C[Repositorio<br/>.git]`}
+</Diagram>
+
+Vamos a recorrer el ciclo completo. Crea un archivo:
+
+```bash
+echo "# Mi primer pipeline" > README.md
+echo "print('hola data eng')" > pipeline.py
+```
+
+Ahora pregunta a Git qué ve:
+
+```bash
+git status
+```
+
+Salida típica:
+
+```
+On branch main
+
+No commits yet
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+        README.md
+        pipeline.py
+```
+
+"Untracked" significa que Git **sabe que existen** pero no los está siguiendo.
+Tienes que decirle explícitamente que los quieres versionar.
+
+### Mover archivos a staging
+
+```bash
+# Agrega un archivo concreto
+git add README.md
+
+# O agrega todos los del directorio actual
+git add .
+```
+
+`git status` ahora muestra los archivos en verde, bajo "Changes to be committed".
+Están en **staging**: listos para el próximo commit, pero aún sin sellar en el
+histórico.
+
+<Callout type="warning" title="Cuidado con `git add .`">
+  Es cómodo pero peligroso: agrega TODO lo modificado del directorio actual,
+  incluyendo cosas que tal vez no quieras (archivos secretos, logs, builds).
+  Acostúmbrate a `git add archivo-concreto.py` o usa `git add -p` para revisar
+  cambio por cambio.
+</Callout>
+
+### El primer commit
+
+```bash
+git commit -m "feat: primer commit con README y script base"
+```
+
+Si todo está bien, Git responde con algo como:
+
+```
+[main (root-commit) e8a91b2] feat: primer commit con README y script base
+ 2 files changed, 2 insertions(+)
+ create mode 100644 README.md
+ create mode 100644 pipeline.py
+```
+
+Acabas de crear tu primer **snapshot**. Ese hash `e8a91b2` (los primeros 7
+caracteres del SHA real) es el ID único de este commit. Si modificas un solo
+byte y haces otro commit, el nuevo hash es completamente distinto.
+
+### Inspeccionar el histórico
+
+```bash
+git log
+```
+
+Verás algo como:
+
+```
+commit e8a91b2... (HEAD -> main)
+Author: Tu Nombre <tu@email.com>
+Date:   Tue Mar 12 10:30:00 2026 +0000
+
+    feat: primer commit con README y script base
+```
+
+Tres datos clave por commit:
+
+- **Hash** — el ID inmutable.
+- **Autor + fecha** — quién y cuándo.
+- **Mensaje** — el porqué (esto lo escribes tú).
+
+Para una vista más compacta:
+
+```bash
+git log --oneline
+# e8a91b2 (HEAD -> main) feat: primer commit con README y script base
+```
+
+### Hacer un segundo commit
+
+Edita `pipeline.py`:
+
+```bash
+echo "print('limpiando datos')" >> pipeline.py
+```
+
+```bash
+git status      # pipeline.py aparece como "modified"
+git diff        # te muestra exactamente qué cambió
+git add pipeline.py
+git commit -m "feat: agrega step de limpieza"
+git log --oneline
+# 3f12c4a (HEAD -> main) feat: agrega step de limpieza
+# e8a91b2 feat: primer commit con README y script base
+```
+
+Felicidades, ya tienes histórico. Cada commit es un punto al que puedes volver.
+
+### Anatomía de un buen mensaje de commit
+
+Hay convenciones, pero el mínimo viable es:
+
+- **50 caracteres en la primera línea**, en imperativo: "agrega", "arregla",
+  "elimina" (no "agregando" o "se agregó").
+- **Prefijo semántico** opcional pero recomendable: `feat:`, `fix:`, `docs:`,
+  `refactor:`, `test:`, `chore:`. Te lo agradecerá tu yo del futuro buscando
+  un bug.
+- **Cuerpo opcional** para explicar el porqué cuando no es obvio. Lo separas de
+  la primera línea con una línea en blanco.
+
+Mal mensaje:
+
+```
+update
+```
+
+Buen mensaje:
+
+```
+fix(pipeline): handle null amount in payments aggregation
+
+The Stripe webhook can send amount=null when a charge is voided
+mid-processing. Previously this crashed the daily aggregation
+with TypeError. Now we coalesce null to 0 and log a warning.
+```
+
+### Errores comunes
+
+- **Olvidar `git add` antes de `git commit`**. El commit incluye lo que está en
+  staging, no en working. Si modificaste algo y no hiciste `add`, el commit
+  no lleva ese cambio.
+- **Commitear secretos** (claves API, passwords) en el primer commit. Una vez
+  en el histórico, eliminarlos es un dolor (lo cubrimos en lección 8). Mejor
+  configurar `.gitignore` desde el día 1.
+- **Hacer un commit con 50 archivos modificados sin relación entre sí**. Después
+  no puedes revertir solo el bug X. Commits pequeños y temáticos.
+- **Pensar que `git init` borra el contenido de la carpeta**. No: solo crea
+  `.git/`. Tus archivos siguen ahí intactos.
+
+### Para seguir aprendiendo
+
+- [Conventional Commits](https://www.conventionalcommits.org/es/v1.0.0/) —
+  el formato `feat:`, `fix:` que muchos equipos usan.
+- [git-scm: git-init](https://git-scm.com/docs/git-init) — el manual oficial.
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-first-repo-quiz"
+  xpReward={60}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Qué hace `git init`?',
+      options: [
+        'Crea una nueva carpeta de proyecto',
+        'Crea la subcarpeta oculta .git con la metadata del repositorio',
+        'Sube el proyecto a GitHub',
+        'Inicializa todos los repos del sistema',
+      ],
+      correctIndex: 1,
+      explanation: 'Convierte una carpeta normal en un repo Git agregando .git/.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Un archivo "untracked" significa que Git lo está versionando.',
+      correct: false,
+      explanation: 'Untracked = Git lo ve pero NO lo sigue. Para empezar a versionar hay que hacer git add.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: '¿Cuál es el flujo correcto para registrar un cambio?',
+      options: [
+        'commit → add → push',
+        'edit → add → commit',
+        'add → edit → commit',
+        'commit → edit → push',
+      ],
+      correctIndex: 1,
+      explanation: 'Editas, mueves a staging con add, y sellas con commit.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Comando para ver el log compacto en una línea por commit.',
+      template: 'git log --___',
+      answer: 'oneline',
+      caseSensitive: false,
+      explanation: 'git log --oneline es la vista compacta más usada.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: '¿Cuál es un buen mensaje de commit?',
+      options: [
+        '"actualizacion"',
+        '"cambios"',
+        '"feat(api): retry on 5xx with exponential backoff"',
+        '"varios fixes"',
+      ],
+      correctIndex: 2,
+      explanation: 'Específico, en imperativo, prefijo semántico, scope claro.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="git-first-repo-exercise"
+  title="Validador de mensaje de commit"
+  description="Implementa una función `isValidCommitMessage(msg)` que verifique: (1) no está vacío, (2) primera línea ≤ 72 caracteres, (3) empieza con uno de los prefijos: feat, fix, docs, refactor, test, chore."
+  language="javascript"
+  starterCode={`function isValidCommitMessage(msg) {
+  // Tu código aquí
+  return false;
+}
+
+console.log(isValidCommitMessage('feat: add aggregation step'));
+console.log(isValidCommitMessage('update'));
+console.log(isValidCommitMessage(''));`}
+  solution={`function isValidCommitMessage(msg) {
+  if (!msg || typeof msg !== 'string') return false;
+  const firstLine = msg.split('\\n')[0];
+  if (firstLine.length === 0 || firstLine.length > 72) return false;
+  const prefixes = ['feat', 'fix', 'docs', 'refactor', 'test', 'chore'];
+  return prefixes.some((p) => firstLine.startsWith(p + ':') || firstLine.startsWith(p + '('));
+}
+console.log(isValidCommitMessage('feat: add aggregation step'));
+console.log(isValidCommitMessage('update'));
+console.log(isValidCommitMessage(''));`}
+  hints={[
+    'Usa msg.split("\\n")[0] para quedarte con la primera línea.',
+    'Array.some te ayuda a chequear varios prefijos posibles.',
+    'Un prefijo válido puede llevar scope: feat(api): ...',
+  ]}
+  tests={[
+    {
+      description: 'feat: ... es válido',
+      assert: 'isValidCommitMessage("feat: add aggregation step") === true',
+    },
+    {
+      description: 'string vacío es inválido',
+      assert: 'isValidCommitMessage("") === false',
+    },
+    {
+      description: '"update" sin prefijo es inválido',
+      assert: 'isValidCommitMessage("update") === false',
+    },
+    {
+      description: 'feat con scope es válido',
+      assert: 'isValidCommitMessage("feat(api): retry") === true',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: profundizamos en los **comandos del día a día** — status, add,
+commit, log, diff — los que vas a usar 100 veces al día.

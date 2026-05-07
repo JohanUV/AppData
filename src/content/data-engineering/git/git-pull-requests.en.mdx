@@ -1,0 +1,304 @@
+## Pull Requests and collaboration
+
+Up to now you've worked alone. As soon as you collaborate — a team, an open
+source project, a coworker — you'll start using **Pull Requests** (PRs). A
+PR is a change proposal: "here are some commits I made on a branch, please
+review them and, if they're good, merge them into `main`".
+
+PRs are a platform invention (GitHub popularized them; GitLab calls them
+"Merge Requests" — same thing). Git doesn't natively know about them. But
+they have become the standard way to ship code to production.
+
+### PR lifecycle
+
+<Diagram type="mermaid">
+{`flowchart TD
+  A[Create branch feature/x] --> B[Make commits]
+  B --> C[git push origin feature/x]
+  C --> D[Open PR on GitHub<br/>feature/x → main]
+  D --> E[CI runs automated tests]
+  D --> F[Teammates review<br/>leave comments]
+  F --> G{Changes requested?}
+  G -->|Yes| B
+  G -->|No| H[Merge to main]
+  H --> I[Delete branch feature/x]`}
+</Diagram>
+
+### Creating a PR step by step
+
+Assuming the repo is already linked to GitHub (lesson 6).
+
+**1. Work on a branch, not on main:**
+
+```bash
+git switch main
+git pull
+git switch -c feature/add-validation
+# ... edit, add, commit ...
+git push -u origin feature/add-validation
+```
+
+**2. Open the PR on GitHub:**
+
+GitHub detects your push and shows a yellow banner: "feature/... had recent
+pushes — Compare & pull request". Click it.
+
+If not, go to **Pull requests** → **New pull request** → choose
+`base: main` ← `compare: feature/add-validation`.
+
+**3. Fill the description.** A good description includes:
+
+- **What** changes (1-2 line summary).
+- **Why** it's needed (context, ticket).
+- **How to test it** (steps for the reviewer).
+- **Screenshots** if it touches UI.
+
+```markdown
+## Summary
+Adds negative-amount validation in /payments endpoint.
+
+## Context
+Ticket DATA-142: payments with amount=-1 silently passed and contaminated
+the daily aggregation.
+
+## Tests
+1. POST /payments amount=-1 → must respond 400.
+2. POST /payments amount=10 → 200 as before.
+3. New test: payment_test.py::test_negative_amount_rejected.
+```
+
+**4. Assign reviewers and labels** — pick the person who knows that part of
+the code best.
+
+**5. Wait for CI.** GitHub Actions / CircleCI / whatever runs tests. If
+they fail, you see a red check. Fix and push — the PR updates itself, no
+need to reopen.
+
+### Iterating on comments
+
+Reviewers leave comments. You can reply, mark resolved, or change code:
+
+```bash
+git add file.py
+git commit -m "fix: address review comments — use Decimal instead of float"
+git push
+```
+
+The push appears in the PR automatically. When a reviewer approves (✅
+"Approve"), the green "Merge pull request" button unlocks.
+
+### Three ways to merge a PR
+
+GitHub offers three strategies:
+
+**1. Merge commit.** PR is merged with a merge commit joining the two
+histories. Keeps all original commits plus an extra one. Richer but
+noisier history.
+
+```
+main: A---B---C---D---M
+              \\     /
+              E-F-G    (PR commits)
+```
+
+**2. Squash and merge.** All PR commits are squashed into a single commit
+on main. Linear and clean history, but you lose the granularity of the
+original commits.
+
+```
+main: A---B---C---D---[E+F+G]
+```
+
+Most common in professional repos: PR becomes a single commit with the PR
+title as the message and details in the body.
+
+**3. Rebase and merge.** Replays PR commits on top of main without a merge
+commit. Linear history with all commits.
+
+```
+main: A---B---C---D---E'---F'---G'
+```
+
+Which one to use? Squash is the most practical for teams: one PR = one
+commit on main. In open source, follow what the repo says.
+
+### Common types of review feedback
+
+When you review (or when you're reviewed):
+
+- **Functionality** — "this breaks if input is null".
+- **Performance** — "this loop is O(n²); a Map gives O(n)".
+- **Style** — "project convention: snake_case in Python".
+- **Design** — "this logic should live in utils, not the handler".
+- **Tests** — "the error path isn't covered".
+- **Security** — "this leaves a SQL injection open".
+- **Nit** (nitpick) — minor, non-blocking: "typo in comment". Marked with
+  "nit:" by convention so the author knows it's optional.
+
+### Review etiquette
+
+- **Be specific.** "I don't like this function" doesn't help. "This function
+  may return None and crash the caller; suggest an explicit Optional" does.
+- **Critique code, not people.** "this can be improved like this" not "you
+  wrote this badly".
+- **Approve early when you can.** Blocking PRs over nits slows the team.
+- **If you ask for big changes, suggest alternatives.** Not just "no" —
+  point a way forward.
+
+### Forks vs branches
+
+Two models:
+
+- **Branch model** (internal team): everyone has push permissions, works on
+  branches in the same repo, opens PRs branch-to-branch.
+- **Fork model** (open source): you contribute from your own fork. Clone
+  your fork, push there, open PR `your-fork:feature → upstream:main`.
+
+The fork model is the open-source standard because maintainers can't grant
+push to every stranger on the internet.
+
+### Common mistakes
+
+- **Giant PRs**. 50 files, 2000 lines, 5 features mixed. Impossible to
+  review well. Rule: a PR should be reviewable in under 30 minutes.
+- **Description "fix"**. No context, reviewer must guess. Spend 3 minutes
+  on a good description and save the reviewer 30.
+- **Marking comments resolved without applying the fix**. Be honest: if you
+  say it's fixed, fix it.
+- **Force-pushing during review**. Erases comment context. Prefer extra
+  commits; squash at the end cleans it up.
+- **Approving without reading**. "LGTM" without reading is a team smell.
+
+### Keep learning
+
+- [GitHub Docs — About PRs](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests)
+- [Google's engineering practices: code review](https://google.github.io/eng-practices/review/) — the canonical doc.
+- [Conventional Comments](https://conventionalcomments.org/).
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-pr-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'What is a Pull Request?',
+      options: [
+        'A Git command',
+        'A change proposal to merge into another branch, with review',
+        'A configuration file',
+        'A type of commit',
+      ],
+      correctIndex: 1,
+      explanation: 'It is a platform primitive (GitHub/GitLab), not a Git one.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'After pushing extra commits to a PR branch, you must close and reopen the PR.',
+      correct: false,
+      explanation: 'No: each push to the branch updates the PR automatically.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Squash and merge turns the PR into:',
+      options: [
+        'A merge commit with two parents',
+        'A single commit on main bundling all PR commits',
+        'Multiple commits replayed on top',
+        'No commit at all',
+      ],
+      correctIndex: 1,
+      explanation: 'Squashes the PR commits into one; clean linear history on main.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q4',
+      prompt: 'In open source, why is the fork model used?',
+      options: [
+        'It is faster',
+        'Maintainers do not give push permissions to every stranger',
+        'It does not support branches',
+        'GitHub forces it',
+      ],
+      correctIndex: 1,
+      explanation: 'Work on your own fork and open a PR upstream; the maintainer reviews and merges.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q5',
+      prompt: 'Order the healthy PR flow.',
+      steps: [
+        'Create branch from main',
+        'Make commits and push',
+        'Open PR with description',
+        'Address review comments',
+        'Merge when approved + CI green',
+      ],
+      explanation: 'Branch → push → PR → review → merge.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="git-pr-exercise"
+  title="PR description validator"
+  description="Implement `validatePRDescription(text)` returning an array with problems found. Rules: must contain '## Summary' and '## Tests' sections; total body must have at least 50 chars. Return [] if OK."
+  language="javascript"
+  starterCode={`function validatePRDescription(text) {
+  const problems = [];
+  return problems;
+}
+
+console.log(validatePRDescription('## Summary\\nx\\n## Tests\\ny'));
+console.log(validatePRDescription('all good'));`}
+  solution={`function validatePRDescription(text) {
+  const problems = [];
+  if (typeof text !== 'string' || text.length < 50) {
+    problems.push('Description too short (min 50 chars).');
+  }
+  if (!/^## Summary/m.test(text)) {
+    problems.push('Missing "## Summary" section.');
+  }
+  if (!/^## Tests/m.test(text)) {
+    problems.push('Missing "## Tests" section.');
+  }
+  return problems;
+}
+console.log(validatePRDescription('## Summary\\nx\\n## Tests\\ny'));
+console.log(validatePRDescription('all good'));`}
+  hints={[
+    'Use regex with /m so ^ matches line start.',
+    'Collect problems in an array and return at the end.',
+  ]}
+  tests={[
+    {
+      description: 'valid description → empty array',
+      assert: 'validatePRDescription("## Summary\\nthis changes X and Y to fix Z bla bla bla.\\n## Tests\\nrun pnpm test").length === 0',
+    },
+    {
+      description: 'missing sections → reports',
+      assert: 'validatePRDescription("loose text without sections but long enough to pass the minimum char count of the validator").length >= 2',
+    },
+    {
+      description: 'too short → reports',
+      assert: 'validatePRDescription("x").length >= 1',
+    },
+  ]}
+/>
+
+---
+
+Next, the last lesson of the module: **best practices, commit messages and
+`.gitignore`** — the details that take you from "I know Git" to "I work
+with Git professionally".

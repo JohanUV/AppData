@@ -186,14 +186,26 @@ export const badgeSeeds: BadgeSeed[] = [
 
   // Módulos completos
   {
+    slug: 'git-master',
+    icon: 'GitBranch',
+    tier: 'silver',
+    name: { es: 'Versionado al fin', en: 'Versioned at last', pt: 'Versionado afinal' },
+    description: {
+      es: 'Completa el módulo de Git y GitHub.',
+      en: 'Complete the Git and GitHub module.',
+      pt: 'Complete o módulo de Git e GitHub.',
+    },
+    criteria: { type: 'module_complete', moduleSlug: 'git' },
+  },
+  {
     slug: 'sql-master',
     icon: 'Database',
     tier: 'gold',
-    name: { es: 'Maestro SQL', en: 'SQL Master', pt: 'Mestre SQL' },
+    name: { es: 'SQL Ninja', en: 'SQL Ninja', pt: 'SQL Ninja' },
     description: {
-      es: 'Completa todo el módulo de SQL.',
-      en: 'Complete the entire SQL module.',
-      pt: 'Complete todo o módulo de SQL.',
+      es: 'Completa todo el módulo de SQL avanzado.',
+      en: 'Complete the entire advanced SQL module.',
+      pt: 'Complete todo o módulo de SQL avançado.',
     },
     criteria: { type: 'module_complete', moduleSlug: 'sql' },
   },
@@ -201,7 +213,11 @@ export const badgeSeeds: BadgeSeed[] = [
     slug: 'python-master',
     icon: 'Terminal',
     tier: 'gold',
-    name: { es: 'Pythonista', en: 'Pythonista', pt: 'Pythonista' },
+    name: {
+      es: 'Pythonista de datos',
+      en: 'Data Pythonista',
+      pt: 'Pythonista de dados',
+    },
     description: {
       es: 'Completa todo el módulo de Python.',
       en: 'Complete the entire Python module.',
@@ -210,16 +226,92 @@ export const badgeSeeds: BadgeSeed[] = [
     criteria: { type: 'module_complete', moduleSlug: 'python' },
   },
   {
-    slug: 'spark-master',
+    slug: 'modeling-master',
+    icon: 'Network',
+    tier: 'gold',
+    name: {
+      es: 'Arquitecto de datos',
+      en: 'Data architect',
+      pt: 'Arquiteto de dados',
+    },
+    description: {
+      es: 'Completa el módulo de modelado de datos.',
+      en: 'Complete the data modeling module.',
+      pt: 'Complete o módulo de modelagem de dados.',
+    },
+    criteria: { type: 'module_complete', moduleSlug: 'modeling' },
+  },
+  {
+    slug: 'etl-master',
+    icon: 'Workflow',
+    tier: 'gold',
+    name: { es: 'Maestro de pipelines', en: 'Pipeline master', pt: 'Mestre dos pipelines' },
+    description: {
+      es: 'Completa el módulo de ETL/ELT y orquestación.',
+      en: 'Complete the ETL/ELT and orchestration module.',
+      pt: 'Complete o módulo de ETL/ELT e orquestração.',
+    },
+    criteria: { type: 'module_complete', moduleSlug: 'etl' },
+  },
+  {
+    slug: 'warehouse-master',
+    icon: 'Warehouse',
+    tier: 'gold',
+    name: { es: 'Warehouse Wizard', en: 'Warehouse wizard', pt: 'Warehouse wizard' },
+    description: {
+      es: 'Completa el módulo de Data Warehouses.',
+      en: 'Complete the Data Warehouses module.',
+      pt: 'Complete o módulo de Data Warehouses.',
+    },
+    criteria: { type: 'module_complete', moduleSlug: 'warehouse' },
+  },
+  {
+    slug: 'bigdata-master',
     icon: 'Zap',
     tier: 'gold',
-    name: { es: 'Spark Master', en: 'Spark Master', pt: 'Spark Master' },
+    name: { es: 'Big Data Slayer', en: 'Big Data slayer', pt: 'Big Data slayer' },
     description: {
-      es: 'Completa el módulo de Apache Spark.',
-      en: 'Complete the Apache Spark module.',
-      pt: 'Complete o módulo de Apache Spark.',
+      es: 'Completa el módulo de Spark + Kafka.',
+      en: 'Complete the Spark + Kafka module.',
+      pt: 'Complete o módulo de Spark + Kafka.',
     },
-    criteria: { type: 'module_complete', moduleSlug: 'spark' },
+    criteria: { type: 'module_complete', moduleSlug: 'bigdata' },
+  },
+  {
+    slug: 'cloud-master',
+    icon: 'Cloud',
+    tier: 'gold',
+    name: { es: 'Cloud Citizen', en: 'Cloud citizen', pt: 'Cloud citizen' },
+    description: {
+      es: 'Completa el módulo de cloud (AWS).',
+      en: 'Complete the cloud (AWS) module.',
+      pt: 'Complete o módulo de cloud (AWS).',
+    },
+    criteria: { type: 'module_complete', moduleSlug: 'cloud' },
+  },
+  {
+    slug: 'devops-master',
+    icon: 'Container',
+    tier: 'gold',
+    name: { es: 'DataOps Pro', en: 'DataOps pro', pt: 'DataOps pro' },
+    description: {
+      es: 'Completa el módulo de DevOps para Data.',
+      en: 'Complete the DevOps for Data module.',
+      pt: 'Complete o módulo de DevOps para Data.',
+    },
+    criteria: { type: 'module_complete', moduleSlug: 'devops' },
+  },
+  {
+    slug: 'full-path',
+    icon: 'Crown',
+    tier: 'platinum',
+    name: { es: 'Ruta completa', en: 'Full path', pt: 'Rota completa' },
+    description: {
+      es: 'Completa todos los módulos de la ruta de Data Engineering.',
+      en: 'Complete every module of the Data Engineering path.',
+      pt: 'Complete todos os módulos da rota de Data Engineering.',
+    },
+    criteria: { type: 'lessons_count', count: 68 },
   },
 
   // Calidad

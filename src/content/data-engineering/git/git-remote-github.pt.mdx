@@ -1,0 +1,270 @@
+## Trabalhando com GitHub remoto
+
+Até aqui o Git viveu só na sua máquina. Já é valioso, mas o poder real
+chega quando você conecta a um **remoto**: um repositório Git hospedado em
+outro lugar (GitHub, GitLab, Bitbucket). O remoto é o ponto de
+sincronização entre devs e o backup do seu código se o disco morrer.
+
+Nesta lição você vincula o repo local ao GitHub, aprende a sincronizar com
+`push`, `pull` e `fetch`, e configura SSH para não pedir senha em cada
+operação.
+
+### Criar repo no GitHub
+
+1. [github.com](https://github.com), faça login.
+2. Canto superior direito → **+** → **New repository**.
+3. Nome (`meu-primeiro-pipeline`), descrição opcional, público/privado.
+4. **Não marque** "Add a README file" — você já tem um local.
+5. Crie.
+
+GitHub mostra instruções. As que importam (caso "push an existing
+repository"):
+
+```bash
+git remote add origin git@github.com:seu-user/meu-primeiro-pipeline.git
+git branch -M main
+git push -u origin main
+```
+
+Antes de rodar, configure SSH.
+
+### HTTPS vs SSH
+
+- **HTTPS** — `https://github.com/user/repo.git`. Pede token a cada push
+  (senhas não aceitas desde 2021). Fácil com credential helper.
+- **SSH** — `git@github.com:user/repo.git`. Uma vez configurado, sem
+  prompts. Mais cômodo no longo prazo.
+
+Vamos com SSH (padrão em tutoriais sérios).
+
+### Configurar SSH passo a passo
+
+```bash
+# 1. Gerar chave
+ssh-keygen -t ed25519 -C "voce@email.com"
+
+# 2. Iniciar agente e adicionar chave
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_ed25519
+
+# 3. Copiar chave pública
+cat ~/.ssh/id_ed25519.pub
+# macOS: pbcopy < ~/.ssh/id_ed25519.pub
+# Windows Git Bash: cat ~/.ssh/id_ed25519.pub | clip
+```
+
+**4. Cole a chave no GitHub:** Settings → SSH and GPG keys → **New SSH
+key** → Cole → Save.
+
+**5. Verificar:**
+
+```bash
+ssh -T git@github.com
+# Hi seu-user! You've successfully authenticated...
+```
+
+### Conectar local com remoto
+
+```bash
+git remote add origin git@github.com:seu-user/meu-primeiro-pipeline.git
+git remote -v
+git branch -M main
+git push -u origin main
+```
+
+`-u` faz a branch local lembrar do par remoto. Depois `git push` e `git
+pull` sem args funcionam.
+
+### Os três comandos de sync
+
+<AnnotatedCode
+  language="bash"
+  filename="terminal"
+  annotations={[
+    {
+      match: 'git fetch',
+      title: 'Só baixa, não toca',
+      body: 'fetch traz mudanças remotas a refs/remotes/origin/* mas NÃO aplica. Seguro: você revisa antes de mergear.',
+    },
+    {
+      match: 'git pull',
+      title: 'fetch + merge',
+      body: 'Equivalente a git fetch + git merge origin/main. Mais cômodo, menos controle.',
+    },
+    {
+      match: 'git push',
+      title: 'Sobe seus commits locais',
+      body: 'Envia commits que só existem localmente. Se o remoto avançou, push é rejeitado e você precisa pull primeiro.',
+    },
+  ]}
+>
+{`git fetch origin
+git pull
+git push`}
+</AnnotatedCode>
+
+### Fluxo típico
+
+```
+manhã:    git pull origin main          # Começo atualizado
+meio:     git push origin feature/x     # Sobe trabalho
+tarde:    git fetch && git log ...      # Vejo o que outros fizeram
+```
+
+### Clonar repo existente
+
+```bash
+git clone git@github.com:org/projeto.git
+cd projeto
+git remote -v       # já configurado
+git branch -a       # branches locais e remotas
+```
+
+### Push rejeitado: como arrumar
+
+```
+! [rejected]        main -> main (fetch first)
+```
+
+Significa: alguém pushed algo novo a main que você não tem.
+
+```bash
+git pull --rebase
+git push
+```
+
+`--rebase` mantém histórico linear (sem merge commits "Merge branch
+main"). Boa prática para branches solo.
+
+### Erros comuns
+
+- **`git push --force` para "consertar"**. Sobrescreve o remoto e destrói
+  trabalho de outros. Só em branches pessoais e nunca em main.
+- **Esquecer `-u` no primeiro push**.
+- **Confundir fetch com pull**.
+- **Pushear segredos**. Crawlers indexam repos públicos em minutos.
+  Considere a chave comprometida e rote.
+- **Usar HTTPS pedindo senha sempre**. Configure credential helper ou
+  passe pra SSH.
+
+### Para continuar aprendendo
+
+- [GitHub Docs — SSH](https://docs.github.com/en/authentication/connecting-to-github-with-ssh)
+- [Pro Git §2.5](https://git-scm.com/book/en/v2/Git-Basics-Working-with-Remotes)
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-remote-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Diferença entre fetch e pull?',
+      options: [
+        'fetch é mais rápido',
+        'fetch só baixa; pull baixa e mergeia',
+        'pull funciona offline',
+        'Sem diferença',
+      ],
+      correctIndex: 1,
+      explanation: 'pull = fetch + merge num passo só.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Uma chave SSH pública pode ser colada no GitHub; nunca compartilhe a privada.',
+      correct: true,
+      explanation: 'A pública (.pub) é pra distribuir; a privada fica na sua máquina.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: '`git push -u origin main` — o que `-u` faz?',
+      options: [
+        'Push forçado',
+        'Estabelece tracking entre branch local e remota',
+        'Push para múltiplos remotos',
+        'Habilita signed commits',
+      ],
+      correctIndex: 1,
+      explanation: '-u (--set-upstream) lembra o par local↔remoto.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Comando para listar remotos configurados.',
+      template: 'git remote ___',
+      answer: '-v',
+      caseSensitive: true,
+      explanation: '-v (verbose) mostra URLs de fetch e push.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q5',
+      prompt: 'Ordene os passos para vincular repo local ao GitHub pela primeira vez.',
+      steps: [
+        'Criar repo vazio no GitHub',
+        'git remote add origin <url>',
+        'git push -u origin main',
+      ],
+      explanation: 'Criar remoto → associar local → push inicial com tracking.',
+    },
+  ]}
+/>
+
+---
+
+## Exercício prático
+
+<Exercise
+  id="git-remote-exercise"
+  title="Parser de URL do GitHub"
+  description="Implemente `parseGithubUrl(url)` retornando { owner, repo } dado SSH ou HTTPS."
+  language="javascript"
+  starterCode={`function parseGithubUrl(url) {
+  return null;
+}
+
+console.log(parseGithubUrl('git@github.com:johanuv/AppData.git'));
+console.log(parseGithubUrl('https://github.com/johanuv/AppData.git'));`}
+  solution={`function parseGithubUrl(url) {
+  const ssh = url.match(/^git@github\\.com:([^/]+)\\/(.+?)(?:\\.git)?$/);
+  if (ssh) return { owner: ssh[1], repo: ssh[2] };
+  const https = url.match(/^https:\\/\\/github\\.com\\/([^/]+)\\/(.+?)(?:\\.git)?$/);
+  if (https) return { owner: https[1], repo: https[2] };
+  return null;
+}
+console.log(parseGithubUrl('git@github.com:johanuv/AppData.git'));
+console.log(parseGithubUrl('https://github.com/johanuv/AppData.git'));`}
+  hints={[
+    'Use regex para os dois formatos.',
+    'O sufixo .git é opcional.',
+  ]}
+  tests={[
+    {
+      description: 'parseia SSH',
+      assert: 'JSON.stringify(parseGithubUrl("git@github.com:a/b.git")) === \\\'{"owner":"a","repo":"b"}\\\'',
+    },
+    {
+      description: 'parseia HTTPS',
+      assert: 'JSON.stringify(parseGithubUrl("https://github.com/a/b.git")) === \\\'{"owner":"a","repo":"b"}\\\'',
+    },
+    {
+      description: 'sem .git também',
+      assert: 'JSON.stringify(parseGithubUrl("https://github.com/a/b")) === \\\'{"owner":"a","repo":"b"}\\\'',
+    },
+    {
+      description: 'inválido devolve null',
+      assert: 'parseGithubUrl("xyz") === null',
+    },
+  ]}
+/>
+
+---
+
+Próxima lição: **Pull Requests e colaboração**.

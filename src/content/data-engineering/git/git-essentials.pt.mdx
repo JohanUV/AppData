@@ -1,0 +1,289 @@
+## Comandos essenciais: status, add, commit, log
+
+Se você tivesse que aprender só cinco comandos do Git para sobreviver, seriam:
+`status`, `add`, `commit`, `log` e `diff`. Você vai digitar centenas de vezes
+por dia. Esta lição cobre os flags que você de fato vai usar.
+
+### git status: seu mapa mental
+
+`git status` é o comando que você mais vai rodar. Mostra:
+
+- Em qual branch está.
+- Quais arquivos estão modificados sem stage.
+- Quais estão em staging prontos pro commit.
+- Quais não são rastreados.
+
+```bash
+git status
+```
+
+```
+On branch main
+Changes to be committed:
+        modified:   pipeline.py
+Changes not staged for commit:
+        modified:   README.md
+Untracked files:
+        secrets.env
+```
+
+Versão condensada:
+
+```bash
+git status -s
+# M  pipeline.py    (modificado e em staging)
+#  M README.md      (modificado, sem stage)
+# ?? secrets.env    (untracked)
+```
+
+As duas colunas representam staging e working: `M ` = staged, ` M` = só
+working, `MM` = ambos (staging difere do working).
+
+### git add: a arte de selecionar
+
+```bash
+git add pipeline.py        # Específico
+git add .                  # Tudo na pasta atual
+git add 'src/*.py'         # Padrão
+git add -u                 # Só rastreados
+git add -p                 # Interativo, hunk por hunk
+```
+
+`git add -p` (de "patch") é o truque do profissional. Quando você mexeu em
+10 coisas mas só quer commitar 3, ele pergunta hunk por hunk: `Stage this
+hunk [y,n,q,a,d,s,e,?]`. Teclas úteis:
+
+- `y` — sim, stage.
+- `n` — não, pula.
+- `s` — split: divide o hunk em pedaços menores.
+- `q` — quit.
+
+### git diff: o que mudou exatamente?
+
+<AnnotatedCode
+  language="bash"
+  filename="terminal"
+  annotations={[
+    {
+      match: 'git diff',
+      title: 'Working vs staging',
+      body: 'Sem args, mostra mudanças no working ainda sem stage. O que você veria se fizesse git add agora.',
+    },
+    {
+      match: '--staged',
+      title: 'Staging vs último commit',
+      body: 'Com --staged (ou --cached), mostra o que mudou em staging desde o último commit. O que vai no próximo commit.',
+    },
+    {
+      match: 'HEAD',
+      title: 'Working+staging vs último commit',
+      body: 'HEAD aponta pro último commit. git diff HEAD mostra tudo modificado desde então.',
+    },
+  ]}
+>
+{`# Sem stage
+git diff
+
+# Já em staging
+git diff --staged
+
+# Tudo modificado desde último commit
+git diff HEAD
+
+# Só um arquivo
+git diff pipeline.py`}
+</AnnotatedCode>
+
+Formato unified diff:
+
+```diff
+@@ -1,3 +1,4 @@
+ def load(path):
+-    return open(path).read()
++    with open(path) as f:
++        return f.read()
+```
+
+`-` linhas removidas, `+` adicionadas.
+
+### git commit: variantes úteis
+
+```bash
+git commit                        # Abre editor configurado
+git commit -am "fix: typo"        # Stage + commit em um shot
+git commit --amend                # Modifica o último commit
+git commit --amend -m "novo"
+git commit --no-verify            # Pula hooks pre-commit
+```
+
+`--amend` é ótimo para corrigir mensagem ou adicionar arquivo esquecido.
+**Só em commits que ainda não foram pushed**.
+
+### git log: navegar histórico
+
+```bash
+git log --oneline
+git log --oneline --graph --all   # Com grafo
+git log -5                        # Últimos 5
+git log --author="Johan"
+git log --grep="auth"
+git log --follow pipeline.py
+git log --stat                    # Linhas mudadas
+```
+
+Alias favorito:
+
+```bash
+git config --global alias.lg "log --oneline --graph --all --decorate"
+```
+
+### Desfazer mudanças (intro)
+
+```bash
+git restore --staged pipeline.py    # Tira de staging (preserva working)
+git restore pipeline.py             # Descarta mudanças no working (CUIDADO)
+git restore .                       # Tudo (perigoso)
+```
+
+Git ≥ 2.23 prefere `restore`. Tutoriais antigos usam `git checkout
+pipeline.py` — equivalente.
+
+### Erros comuns
+
+- **`git add .` sem revisar**. Termina commitando `.env` com segredos.
+- **Esquecer `--staged` em `git diff`**. Acha que tudo está salvo, mas vê
+  só sem-stage.
+- **`git commit --amend` depois de pushear**. Reescreve histórico
+  compartilhado. Só amend em commits locais.
+- **`git restore .`** quando queria desfazer só um arquivo. Perde tudo.
+
+### Para continuar aprendendo
+
+- [Oh Shit, Git!?!](https://ohshitgit.com/)
+- [Pro Git §2.2](https://git-scm.com/book/en/v2/Git-Basics-Recording-Changes-to-the-Repository)
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-essentials-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Você modificou pipeline.py mas não fez git add. O que `git diff` (sem flags) mostra?',
+      options: [
+        'Nada, não há nada em staging',
+        'Diferenças entre working e staging',
+        'Diferenças entre último commit e working',
+        'O histórico completo',
+      ],
+      correctIndex: 1,
+      explanation: 'git diff sem flags compara working com staging.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Quando usar `git commit --amend`?',
+      options: [
+        'Para corrigir um commit já pushed',
+        'Para corrigir o último commit local antes do push',
+        'Para desfazer um commit',
+        'Nunca, é destrutivo',
+      ],
+      correctIndex: 1,
+      explanation: 'Amend reescreve o último commit. Seguro local; perigoso se já está no remoto.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: '`git restore --staged pipeline.py` apaga as mudanças do arquivo.',
+      correct: false,
+      explanation: 'Só remove de staging; mudanças seguem no working. O destrutivo é sem --staged.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Comando para ver histórico com grafo de branches.',
+      template: 'git log --oneline --___',
+      answer: 'graph',
+      caseSensitive: false,
+      explanation: '--graph desenha o grafo em ASCII junto ao log.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q5',
+      prompt: 'Ordene "tenho mudanças em 2 arquivos, só quero commitar um".',
+      steps: [
+        'git status (ver estado)',
+        'git add arquivo1.py (só o desejado)',
+        'git diff --staged (verificar)',
+        'git commit -m "..."',
+      ],
+      explanation: 'Inspecionar → selecionar → verificar staging → selar.',
+    },
+  ]}
+/>
+
+---
+
+## Exercício prático
+
+<Exercise
+  id="git-essentials-exercise"
+  title="Resumo de git status"
+  description="Dada saída de git status -s como string, retorne objeto com counts: { staged, modified, untracked }."
+  language="javascript"
+  starterCode={`function summarizeStatus(output) {
+  return { staged: 0, modified: 0, untracked: 0 };
+}
+
+const output = 'M  pipeline.py\\n M README.md\\n?? secrets.env';
+console.log(summarizeStatus(output));`}
+  solution={`function summarizeStatus(output) {
+  const lines = output.split('\\n').filter(Boolean);
+  let staged = 0, modified = 0, untracked = 0;
+  for (const line of lines) {
+    const x = line[0], y = line[1];
+    if (x === '?' && y === '?') untracked++;
+    else {
+      if (x !== ' ' && x !== '?') staged++;
+      if (y !== ' ' && y !== '?') modified++;
+    }
+  }
+  return { staged, modified, untracked };
+}
+const output = 'M  pipeline.py\\n M README.md\\n?? secrets.env';
+console.log(summarizeStatus(output));`}
+  hints={[
+    'Cada linha tem 2 chars de status no início.',
+    'col[0] é staging, col[1] é working.',
+    '?? é untracked.',
+  ]}
+  tests={[
+    {
+      description: 'conta staged',
+      assert: 'summarizeStatus("M  a.py").staged === 1',
+    },
+    {
+      description: 'conta modificados',
+      assert: 'summarizeStatus(" M b.py").modified === 1',
+    },
+    {
+      description: 'conta untracked',
+      assert: 'summarizeStatus("?? c.py").untracked === 1',
+    },
+    {
+      description: 'mix completo',
+      assert: 'JSON.stringify(summarizeStatus("M  a\\n M b\\n?? c")) === \\\'{"staged":1,"modified":1,"untracked":1}\\\'',
+    },
+  ]}
+/>
+
+---
+
+Próxima lição: **branches e merge** — o superpoder do Git para trabalhar em
+paralelo.

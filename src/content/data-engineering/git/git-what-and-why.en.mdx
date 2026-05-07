@@ -1,0 +1,237 @@
+## What is Git and why does it matter?
+
+Picture this: you've spent three days polishing a Python script that cleans a
+sales dataset. It works. You decide to "improve" it with a quick refactor and
+20 minutes later nothing compiles, you can't remember what you changed, and
+the working version vanished between Ctrl+Z and coffee. That scene has a name:
+**working without version control**. And it's exactly the problem Git solves.
+
+**Git** is a distributed version control system. Its job is concrete: record
+every change in your files, let you go back to any previous state, and let
+several people work in parallel without stepping on each other. It isn't just
+another tool in the Data Engineer's belt — it's the assumed tool, the one
+that separates code that can be shared from code that can't.
+
+<Callout type="info" title="Key idea">
+  Git doesn't store diffs. It stores **complete snapshots** of the project at
+  every commit, deduplicated by hash. That's why switching branches is
+  instantaneous: it just points to another snapshot.
+</Callout>
+
+### The problem Git solves
+
+Before Git there were alternatives: copy folders with suffixes
+(`pipeline_v3_FINAL_FINAL`), email zips around, or use centralized tools like
+SVN. Each had a bottleneck: expensive to coordinate, dependent on a permanent
+central server, or unable to work offline.
+
+Linus Torvalds wrote Git in 2005 with three non-negotiable requirements:
+
+1. **Distributed** — every local copy is a complete repository, with full
+   history. You don't depend on a server to commit.
+2. **Fast** — local operations in milliseconds, even with huge repos.
+3. **Integrity** — every commit is identified with a SHA-1 hash; changing one
+   byte of history changes every subsequent hash. Tampering is impossible
+   silently.
+
+### How Git fits into Data Engineering
+
+For a Data Engineer, Git is the backbone of daily work:
+
+- **Pipelines as code**: your Airflow DAGs, dbt models, Spark scripts — all
+  live in a repo. Without Git, "deploy" means "I FTP'd the file and prayed."
+- **Reproducibility**: commit `abc123` defines exactly which code ran the
+  pipeline at 3am Tuesday. If data went sideways, you go to that exact state
+  and debug.
+- **Code review**: the moment you learn the most is when someone reads your PR
+  and says "this breaks if the API returns null." Without Git, no PR.
+- **Rollback**: a release breaks production? `git revert` puts you back in
+  30 seconds.
+
+### The mental model: three areas
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[Working Directory<br/>editable files] -->|git add| B[Staging Area<br/>changes ready]
+  B -->|git commit| C[Repository<br/>immutable history]
+  C -->|git checkout| A`}
+</Diagram>
+
+Git divides your project into three "zones":
+
+- **Working directory**: what you see in your folder. You edit files here.
+- **Staging area** (index): the "draft" of the next commit. Files marked with
+  `git add` wait here.
+- **Repository**: the permanent history. When you `git commit`, what's in
+  staging is sealed into a new snapshot.
+
+This separation is what enables **atomic** commits: only related work goes in
+together. If you touched 5 files but only 3 are part of the bug you fixed,
+you `git add` only those 3 — the rest stay for another commit.
+
+<AnnotatedCode
+  language="bash"
+  filename="terminal"
+  annotations={[
+    {
+      match: 'git status',
+      title: 'Inspect the 3 zones',
+      body: 'Shows what is in working directory (modified, no add yet), what is in staging (ready for commit), and what files are not tracked yet.',
+    },
+    {
+      match: 'git add pipeline.py',
+      title: 'Move to staging',
+      body: 'Only this file enters the next commit. Other modified files are not included.',
+    },
+    {
+      match: "git commit -m \"fix: handle null API response\"",
+      title: 'Seal the snapshot',
+      body: 'Creates a commit with the staged files. The message should explain why, not what (the diff says what).',
+    },
+  ]}
+>
+{`# See the changes
+git status
+
+# Stage only what relates to the fix
+git add pipeline.py
+
+# Commit with a semantic message
+git commit -m "fix: handle null API response"`}
+</AnnotatedCode>
+
+### Distributed vs centralized
+
+In Subversion (SVN) there was a central server. Every commit went straight
+there; no network, no commits. Git inverts the model: your local copy **is** a
+full repository. You can do 50 commits on a plane with no connection, then
+sync with `git push` and `git pull` once you land.
+
+This changes how you work: experiment locally without fear, do three trial
+commits, squash them into a clean one and only then share. The "narrative" of
+history is built locally, not on the server.
+
+### Common mistakes
+
+- **Confusing Git with GitHub**. Git is the tool; GitHub is a service that
+  hosts Git repositories in the cloud (like GitLab or Bitbucket). You can use
+  Git without GitHub just fine.
+- **One giant commit with "updated everything"**. You lose the ability to
+  revert a specific change. Small, themed commits, always.
+- **Versioning generated files** (logs, output `.parquet`, `__pycache__`).
+  They bloat the repo and add no value; that's what `.gitignore` is for
+  (lesson 8).
+- **Thinking `git push` "saves"**. Every commit is already saved locally.
+  `git push` only syncs with a remote.
+
+### Keep learning
+
+- [Pro Git Book — free, official](https://git-scm.com/book) — the canonical,
+  well-written reference.
+- [Learn Git Branching](https://learngitbranching.js.org/) — visual,
+  interactive, ideal for "seeing" how the graph moves.
+- [GitHub Skills](https://skills.github.com/) — short, practical courses.
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-what-and-why-quiz"
+  xpReward={50}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Which best describes Git?',
+      options: [
+        'A cloud code hosting service',
+        'A specialized text editor',
+        'A distributed version control system',
+        'A scripting language',
+      ],
+      correctIndex: 2,
+      explanation: 'Git is the version control tool; GitHub is a service that hosts Git repos.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Every local Git repository contains the full project history.',
+      correct: true,
+      explanation: 'That is what "distributed" means: every copy is a full repo, no server dependency.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Which is the correct order of the basic flow?',
+      options: [
+        'commit → add → push',
+        'add → commit → push',
+        'push → add → commit',
+        'add → push → commit',
+      ],
+      correctIndex: 1,
+      explanation: 'add moves to staging, commit creates the snapshot, push uploads to the remote.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Command to see which files are modified.',
+      template: 'git ___',
+      answer: 'status',
+      caseSensitive: false,
+      explanation: 'git status shows the state of working directory and staging.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q5',
+      prompt: 'Order the three zones a change moves through before reaching history.',
+      steps: ['Working directory', 'Staging area', 'Repository'],
+      explanation: 'You edit in working, move to staging with add, seal in repository with commit.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="git-what-and-why-exercise"
+  title="Identify the zone"
+  description="Given a sequence of actions, return which zone the change lives in after each step. The function takes a list of commands and returns the resulting zone."
+  language="javascript"
+  starterCode={`function whereIsTheChange(commands) {
+  // commands is an array like ['edit', 'add', 'commit']
+  // 'edit' -> 'working'
+  // 'add'  -> 'staging'
+  // 'commit' -> 'repo'
+  // Return the zone after the last command.
+  return 'working';
+}
+
+const answer = whereIsTheChange(['edit', 'add', 'commit']);
+console.log('final zone:', answer);`}
+  solution={`function whereIsTheChange(commands) {
+  const map = { edit: 'working', add: 'staging', commit: 'repo' };
+  const last = commands[commands.length - 1];
+  return map[last] ?? 'working';
+}
+const answer = whereIsTheChange(['edit', 'add', 'commit']);
+console.log('final zone:', answer);`}
+  hints={[
+    'Only the last command in the list matters.',
+    'Use an object as a lookup table: { edit, add, commit }.',
+  ]}
+  tests={[
+    { description: 'edit → working', assert: "whereIsTheChange(['edit']) === 'working'" },
+    { description: 'edit + add → staging', assert: "whereIsTheChange(['edit','add']) === 'staging'" },
+    { description: 'full flow → repo', assert: "whereIsTheChange(['edit','add','commit']) === 'repo'" },
+  ]}
+/>
+
+---
+
+Next lesson: **install Git on your machine** and configure your identity
+before your first commit.

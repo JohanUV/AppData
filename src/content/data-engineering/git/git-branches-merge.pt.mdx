@@ -1,0 +1,258 @@
+## Branches e merge
+
+Até aqui você trabalhou numa única linha do tempo: cada commit em cima do
+anterior. Funciona para um dev numa única tarefa. A realidade é outra: você
+está corrigindo um bug urgente quando chega um ticket novo, ou quer testar
+uma refatoração sem quebrar a versão que funciona, ou três pessoas tocam o
+mesmo repo simultaneamente.
+
+A resposta do Git é **branching**: criar linhas do tempo paralelas e
+fundi-las depois. Branches são baratas, instantâneas e se combinam com
+`merge`.
+
+### O que é uma branch, tecnicamente?
+
+Uma branch no Git **não é uma cópia do código**. É só um ponteiro móvel
+para um commit. Criar uma branch é criar um ponteiro novo (microssegundos).
+Quando você commita na branch, o ponteiro avança.
+
+<Diagram type="mermaid">
+{`gitGraph
+  commit id: "init"
+  commit id: "feat A"
+  branch feature/x
+  commit id: "wip 1"
+  commit id: "wip 2"
+  checkout main
+  commit id: "feat B"`}
+</Diagram>
+
+`main` e `feature/x` são labels apontando pra commits diferentes. Compartilham
+histórico até o ponto de divergência.
+
+### Operações básicas
+
+```bash
+git branch                                # Lista branches
+git branch feature/limpeza-nulls          # Cria sem trocar
+git switch -c feature/limpeza-nulls       # Cria e troca (mais comum)
+git checkout -b feature/limpeza-nulls     # Forma clássica
+git switch main                           # Trocar para existente
+git branch -d feature/limpeza-nulls       # Apagar (deve estar mergeada)
+git branch -D feature/limpeza-nulls       # Apagar à força
+```
+
+`git switch` é o comando moderno (Git ≥ 2.23). `git checkout` também
+funciona — intercambiáveis pra isso.
+
+### Trabalhar numa branch
+
+```bash
+git switch main
+git switch -c feature/handle-nulls
+echo "# fix nulls" >> pipeline.py
+git add pipeline.py
+git commit -m "feat: skip null amounts"
+git commit -am "test: add null case"
+```
+
+`main` segue intocada. Se a mudança era ruim ideia, troca para `main`,
+apaga a branch, pronto, nada contaminado.
+
+### Merge: combinar branches
+
+```bash
+git switch main
+git merge feature/handle-nulls
+```
+
+Três cenários:
+
+**1. Fast-forward.** Se `main` não avançou desde a criação da branch, o
+Git só move o ponteiro `main` para o último commit. Sem merge commit,
+histórico linear.
+
+**2. Three-way merge.** Se `main` avançou, o Git cria um **merge commit**
+com dois pais. Histórico tem forma de Y.
+
+<Diagram type="mermaid">
+{`gitGraph
+  commit id: "init"
+  branch feature
+  commit id: "f1"
+  commit id: "f2"
+  checkout main
+  commit id: "m1"
+  merge feature id: "merge"`}
+</Diagram>
+
+**3. Conflito.** As duas branches modificaram as mesmas linhas. O Git
+pausa e te pede ajuda.
+
+### Resolver conflitos
+
+```python
+def parse_amount(s):
+<<<<<<< HEAD
+    return float(s)
+=======
+    return float(s.strip()) if s else 0
+>>>>>>> feature/handle-nulls
+```
+
+- Entre `<<<<<<< HEAD` e `=======` está sua branch atual.
+- Entre `=======` e `>>>>>>>` está a branch que você está mergeando.
+
+Decida e edite (apagando os marcadores). Depois:
+
+```bash
+git add pipeline.py
+git commit
+```
+
+Para abortar:
+
+```bash
+git merge --abort
+```
+
+### Estratégia: branches curtas e temáticas
+
+- **Uma branch por feature/bug** com nomes descritivos:
+  `feature/null-handling`, `fix/api-timeout`.
+- **Vida curta**: idealmente 1-3 dias. Quanto mais tempo, mais difícil
+  mergear.
+- **Mergeie cedo, mergeie sempre**.
+
+### Erros comuns
+
+- **Trabalhar direto em main**. Perde o isolamento.
+- **Criar branches sem atualizar main primeiro**. Você baseia trabalho em
+  código velho.
+- **Apagar branch não-mergeada com `-D`** e perder o trabalho.
+- **Resolver conflitos sem entender**. Apagar marcadores não é resolver.
+- **Merge gigante após semanas de divergência**. Conflitos em cascata.
+
+### Para continuar aprendendo
+
+- [Pro Git §3 — Branching](https://git-scm.com/book/en/v2/Git-Branching-Branches-in-a-Nutshell)
+- [Learn Git Branching](https://learngitbranching.js.org/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-branches-merge-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'O que é uma branch no Git, tecnicamente?',
+      options: [
+        'Uma cópia do repositório',
+        'Um ponteiro móvel para um commit',
+        'Uma pasta separada no disco',
+        'Um fork remoto',
+      ],
+      correctIndex: 1,
+      explanation: 'Só um ponteiro leve. Por isso criar branches é instantâneo.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Quando o Git faz fast-forward merge?',
+      options: [
+        'Sempre que você mergeia',
+        'Quando o destino não avançou desde que a branch foi criada',
+        'Quando há conflitos',
+        'Só em main',
+      ],
+      correctIndex: 1,
+      explanation: 'Se destino não avançou, só move o ponteiro — sem merge commit.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Conflito de merge significa que o Git não consegue auto-combinar porque as duas branches mudaram as mesmas linhas.',
+      correct: true,
+      explanation: 'Git pausa e te pede pra decidir.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Comando moderno para criar e trocar para nova branch.',
+      template: 'git switch ___ feature/x',
+      answer: '-c',
+      caseSensitive: true,
+      explanation: '-c (create) cria e troca em um passo.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Em um conflito, o que está entre `<<<<<<< HEAD` e `=======`?',
+      options: [
+        'A versão da branch que você está mergeando',
+        'A versão da sua branch atual',
+        'A versão mais nova',
+        'A versão sem mudanças',
+      ],
+      correctIndex: 1,
+      explanation: 'HEAD = sua branch atual; abaixo é o que você está mergeando.',
+    },
+  ]}
+/>
+
+---
+
+## Exercício prático
+
+<Exercise
+  id="git-branches-exercise"
+  title="Simulador de fast-forward"
+  description="Implemente `canFastForward(target, source)` onde cada branch é um array de commits (strings). Fast-forward é possível se target for prefixo de source."
+  language="javascript"
+  starterCode={`function canFastForward(target, source) {
+  return false;
+}
+
+console.log(canFastForward(['A','B'], ['A','B','C','D']));
+console.log(canFastForward(['A','B','X'], ['A','B','C','D']));`}
+  solution={`function canFastForward(target, source) {
+  if (target.length > source.length) return false;
+  for (let i = 0; i < target.length; i++) {
+    if (target[i] !== source[i]) return false;
+  }
+  return true;
+}
+console.log(canFastForward(['A','B'], ['A','B','C','D']));
+console.log(canFastForward(['A','B','X'], ['A','B','C','D']));`}
+  hints={[
+    'target deve ser menor ou igual a source.',
+    'Cada commit em target deve aparecer na mesma posição em source.',
+  ]}
+  tests={[
+    {
+      description: 'prefixo claro: true',
+      assert: 'canFastForward(["A","B"],["A","B","C"]) === true',
+    },
+    {
+      description: 'arrays iguais: true',
+      assert: 'canFastForward(["A","B"],["A","B"]) === true',
+    },
+    {
+      description: 'divergência: false',
+      assert: 'canFastForward(["A","X"],["A","B","C"]) === false',
+    },
+    {
+      description: 'target maior: false',
+      assert: 'canFastForward(["A","B","C","D"],["A","B"]) === false',
+    },
+  ]}
+/>
+
+---
+
+Próxima lição: **trabalhar com remotos no GitHub** — push, pull, clone, SSH.

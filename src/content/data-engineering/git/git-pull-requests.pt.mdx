@@ -1,0 +1,254 @@
+## Pull Requests e colaboração
+
+Até agora você trabalhou sozinho. Assim que colaborar — um time, um projeto
+open source, um colega — você vai começar a usar **Pull Requests** (PRs).
+Um PR é uma proposta de mudança: "aqui estão alguns commits que fiz numa
+branch, por favor revisem e, se OK, integrem ao `main`".
+
+PRs são uma invenção das plataformas (GitHub popularizou; GitLab chama de
+"Merge Requests" — é a mesma coisa). O Git não conhece nativamente. Mas
+viraram a forma padrão de mover código pra produção.
+
+### Ciclo de vida do PR
+
+<Diagram type="mermaid">
+{`flowchart TD
+  A[Crio branch feature/x] --> B[Faço commits]
+  B --> C[git push origin feature/x]
+  C --> D[Abro PR no GitHub<br/>feature/x → main]
+  D --> E[CI roda testes]
+  D --> F[Colegas revisam<br/>deixam comentários]
+  F --> G{Pediram mudanças?}
+  G -->|Sim| B
+  G -->|Não| H[Merge para main]
+  H --> I[Apagar branch feature/x]`}
+</Diagram>
+
+### Criar um PR passo a passo
+
+**1. Trabalhe numa branch:**
+
+```bash
+git switch main
+git pull
+git switch -c feature/adicionar-validacao
+# ... edita, add, commit ...
+git push -u origin feature/adicionar-validacao
+```
+
+**2. Abra o PR no GitHub:** banner amarelo "Compare & pull request" → clique.
+Ou Pull requests → New pull request → escolha base/compare.
+
+**3. Preencha a descrição:**
+
+```markdown
+## Resumo
+Adiciona validação de valor negativo no endpoint /payments.
+
+## Contexto
+Ticket DATA-142 reportou que pagamentos com amount=-1 passavam silenciosamente.
+
+## Testes
+1. POST /payments amount=-1 → deve responder 400.
+2. POST /payments amount=10 → 200 como antes.
+3. Teste novo: payment_test.py::test_negative_amount_rejected.
+```
+
+**4. Atribua revisores e labels.**
+
+**5. Aguarde CI.** Se falhar, conserte e push — o PR atualiza sozinho.
+
+### Iterar sobre comentários
+
+```bash
+git add arquivo.py
+git commit -m "fix: address review comments — use Decimal instead of float"
+git push
+```
+
+O push aparece no PR automaticamente. Quando aprovam (✅ "Approve"), o
+botão verde "Merge pull request" desbloqueia.
+
+### Três formas de mergear
+
+**1. Merge commit.** Mantém todos os commits + um merge commit.
+
+```
+main: A---B---C---D---M
+              \\     /
+              E-F-G
+```
+
+**2. Squash and merge.** Todos os commits do PR viram um só em main.
+
+```
+main: A---B---C---D---[E+F+G]
+```
+
+Mais comum em repos profissionais.
+
+**3. Rebase and merge.** Replica os commits no topo de main, sem merge
+commit. Histórico linear com todos os commits.
+
+### Tipos de feedback em code review
+
+- **Funcionalidade** — "isso quebra se entrada for null".
+- **Performance** — "esse loop é O(n²); um Map dá O(n)".
+- **Estilo** — "convenção do projeto: snake_case em Python".
+- **Design** — "essa lógica deveria estar em utils".
+- **Testes** — "falta cobrir o caminho de erro".
+- **Segurança** — "isso deixa um SQL injection aberto".
+- **Nit** — comentário menor não-bloqueante.
+
+### Etiqueta de review
+
+- **Seja específico**.
+- **Critique código, não pessoas**.
+- **Aprove rápido quando puder**.
+- **Se pede mudanças grandes, sugira alternativas**.
+
+### Forks vs branches
+
+- **Branch model** (interno): todos têm push, branches no mesmo repo.
+- **Fork model** (open source): você contribui do seu fork. Maintainer
+  revisa e mergeia.
+
+### Erros comuns
+
+- **PRs gigantes**. Impossível revisar bem.
+- **Descrição "fix"**. Sem contexto.
+- **Marcar comentários "resolved" sem aplicar fix**.
+- **Force-pushear durante review**. Apaga contexto dos comentários.
+- **Aprovar sem ler**.
+
+### Para continuar aprendendo
+
+- [GitHub Docs — About PRs](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests)
+- [Google's engineering practices: code review](https://google.github.io/eng-practices/review/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-pr-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'O que é um Pull Request?',
+      options: [
+        'Um comando do Git',
+        'Uma proposta de mudança para integrar a outra branch, com revisão',
+        'Um arquivo de configuração',
+        'Um tipo de commit',
+      ],
+      correctIndex: 1,
+      explanation: 'É uma primitiva da plataforma (GitHub/GitLab), não do Git.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Após push de novos commits na branch do PR, é preciso fechar e reabrir o PR.',
+      correct: false,
+      explanation: 'Não: cada push atualiza o PR automaticamente.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Squash and merge transforma o PR em:',
+      options: [
+        'Um merge commit com dois pais',
+        'Um único commit em main agrupando todos os do PR',
+        'Múltiplos commits replicados',
+        'Nenhum commit',
+      ],
+      correctIndex: 1,
+      explanation: 'Esmaga commits do PR em um; histórico linear e limpo.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q4',
+      prompt: 'Em open source, por que se usa fork model?',
+      options: [
+        'É mais rápido',
+        'Maintainers não dão push para qualquer pessoa',
+        'Não suporta branches',
+        'GitHub obriga',
+      ],
+      correctIndex: 1,
+      explanation: 'Você trabalha no seu fork e abre PR para upstream.',
+    },
+    {
+      type: 'order_steps',
+      id: 'q5',
+      prompt: 'Ordene o fluxo saudável de PR.',
+      steps: [
+        'Criar branch a partir de main',
+        'Fazer commits e push',
+        'Abrir PR com descrição',
+        'Atender comentários',
+        'Merge quando aprovado + CI verde',
+      ],
+      explanation: 'Branch → push → PR → review → merge.',
+    },
+  ]}
+/>
+
+---
+
+## Exercício prático
+
+<Exercise
+  id="git-pr-exercise"
+  title="Validador de descrição de PR"
+  description="Implemente `validatePRDescription(text)` retornando array de problemas. Regras: deve conter '## Resumo' e '## Testes'; total ≥ 50 chars."
+  language="javascript"
+  starterCode={`function validatePRDescription(text) {
+  const problems = [];
+  return problems;
+}
+
+console.log(validatePRDescription('## Resumo\\nx\\n## Testes\\ny'));
+console.log(validatePRDescription('tudo bem'));`}
+  solution={`function validatePRDescription(text) {
+  const problems = [];
+  if (typeof text !== 'string' || text.length < 50) {
+    problems.push('Descrição muito curta (mínimo 50 caracteres).');
+  }
+  if (!/^## Resumo/m.test(text)) {
+    problems.push('Falta seção "## Resumo".');
+  }
+  if (!/^## Testes/m.test(text)) {
+    problems.push('Falta seção "## Testes".');
+  }
+  return problems;
+}
+console.log(validatePRDescription('## Resumo\\nx\\n## Testes\\ny'));
+console.log(validatePRDescription('tudo bem'));`}
+  hints={[
+    'Use regex com /m para que ^ pegue início de linha.',
+    'Acumule problemas num array e retorne.',
+  ]}
+  tests={[
+    {
+      description: 'descrição válida → array vazio',
+      assert: 'validatePRDescription("## Resumo\\nesta mudança altera X e Y para corrigir Z bla bla bla.\\n## Testes\\nrun pnpm test").length === 0',
+    },
+    {
+      description: 'falta seções → reporta',
+      assert: 'validatePRDescription("texto solto sem secoes mas longo o suficiente para passar o minimo de chars do validador").length >= 2',
+    },
+    {
+      description: 'muito curto → reporta',
+      assert: 'validatePRDescription("x").length >= 1',
+    },
+  ]}
+/>
+
+---
+
+Próxima, a última do módulo: **boas práticas, mensagens de commit e
+`.gitignore`**.

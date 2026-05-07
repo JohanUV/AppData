@@ -1,0 +1,289 @@
+## Installation and initial setup
+
+Before making any commits you need Git installed and you need to tell it who
+you are. Sounds obvious, but this is where 80% of beginners trip up: they
+install Git, make a commit, and the author shows up as `unknown@DESKTOP-XYZ`
+in history. That's hard to scrub later. Better to set it up right from the
+start.
+
+In this lesson we will:
+
+1. Install Git on your OS.
+2. Configure your identity (name, email).
+3. Pick a default editor.
+4. Verify everything with `git --version`.
+
+### Installing per OS
+
+**Windows.** Download the official installer from
+[git-scm.com/download/win](https://git-scm.com/download/win). It's an `.exe`
+that bundles Git Bash, a small Linux-style terminal you'll need (PowerShell
+also works, but Git Bash is closer to the Unix ecosystem Git was born in).
+Most defaults during install are fine, with two notes:
+
+- **Default editor**: pick one you actually know. VS Code is a good choice if
+  you already use it.
+- **Line endings**: pick "Checkout Windows-style, commit Unix-style". Git
+  will normalize line endings so repos don't get phantom diffs when
+  collaborating across macOS/Linux.
+
+**macOS.** Three paths:
+
+```bash
+# Option A: comes with Xcode Command Line Tools
+xcode-select --install
+
+# Option B: Homebrew (more up-to-date)
+brew install git
+
+# Option C: official installer from git-scm.com
+```
+
+**Linux.** Use your package manager:
+
+```bash
+# Debian / Ubuntu
+sudo apt update && sudo apt install git
+
+# Fedora / RHEL
+sudo dnf install git
+
+# Arch
+sudo pacman -S git
+```
+
+### Verify the install
+
+Open your terminal (Git Bash on Windows, Terminal on macOS, any emulator on
+Linux) and run:
+
+```bash
+git --version
+```
+
+You should see something like `git version 2.45.2`. Anything ≥ 2.30 is fine.
+If you get "command not found", restart the terminal (PATH variables don't
+always reload). If it persists, check that the install added Git to PATH.
+
+### Configure your identity
+
+Every commit carries a name and an email. These aren't authenticated (Git
+trusts you locally) but they're recorded in history forever. Configure the
+globals once:
+
+<AnnotatedCode
+  language="bash"
+  filename="terminal"
+  annotations={[
+    {
+      match: '--global',
+      title: 'What does --global do?',
+      body: 'Saves the config to ~/.gitconfig (your home), applied across all repos. Without --global it only affects the current repo. Best practice: --global for identity, no flag for project-specific tweaks.',
+    },
+    {
+      match: 'user.email',
+      title: 'Use the right email',
+      body: 'If you contribute to GitHub, this must match a verified email there. Otherwise commits show up "anonymous" on your profile. You can use the GitHub no-reply email if you care about privacy.',
+    },
+    {
+      match: 'core.editor',
+      title: 'Editor for long messages',
+      body: 'When you run git commit without -m, Git opens this editor for the message. "code --wait" makes VS Code block the terminal until you close the file.',
+    },
+    {
+      match: 'init.defaultBranch',
+      title: 'Initial branch',
+      body: 'By modern convention, "main" replaced "master" as the primary branch. GitHub, GitLab and the community use main by default; setting it here avoids inconsistencies.',
+    },
+  ]}
+>
+{`git config --global user.name "Your Name"
+git config --global user.email "you@email.com"
+git config --global core.editor "code --wait"
+git config --global init.defaultBranch main`}
+</AnnotatedCode>
+
+To confirm:
+
+```bash
+git config --list --global
+```
+
+You'll see something like:
+
+```
+user.name=Your Name
+user.email=you@email.com
+core.editor=code --wait
+init.defaultBranch=main
+```
+
+### Useful extras
+
+These aren't required but will save you pain:
+
+```bash
+# Better colored log output
+git config --global color.ui auto
+
+# Aliases many people use
+git config --global alias.st status
+git config --global alias.co checkout
+git config --global alias.br branch
+git config --global alias.lg "log --oneline --graph --all"
+
+# Resolve conflicts in your editor
+git config --global merge.tool vscode
+```
+
+With this, `git st` equals `git status` and `git lg` shows the visual repo
+history one commit per line.
+
+### Where the config lives
+
+Git has **three config levels**, in precedence order:
+
+1. **System** (`/etc/gitconfig`) — for every user. Rarely touched.
+2. **Global** (`~/.gitconfig`) — for your user. Identity goes here.
+3. **Local** (`.git/config` inside the repo) — project-specific.
+
+If your work and personal accounts use different emails, override per repo:
+
+```bash
+cd ~/projects/work-thing
+git config user.email "you@company.com"
+```
+
+That only affects that repo, leaving the global intact for everything else.
+
+### Common mistakes
+
+- **Forgetting `--global`** and then wondering why every repo asks for your
+  name again. If you're configuring personal identity, you almost always
+  want `--global`.
+- **Email different from GitHub's**: your commits don't link to your profile.
+  Always use a verified email.
+- **Notepad as default Windows editor**: it kills multi-line commit messages
+  with weird encodings. Prefer `code --wait`, `nano` or `vim`.
+- **Skipping line endings on Windows** and fighting invisible diffs later.
+  `core.autocrlf=true` is the right behavior.
+
+### Keep learning
+
+- [Pro Git §1.6 — First-Time Git Setup](https://git-scm.com/book/en/v2/Getting-Started-First-Time-Git-Setup) — official reference.
+- [Conventional Commits](https://www.conventionalcommits.org/) — the message
+  format you'll see in professional repos (we cover it in lesson 8).
+
+---
+
+## Quiz
+
+<Quiz
+  id="git-install-config-quiz"
+  xpReward={50}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'What does `git config --global user.email` do?',
+      options: [
+        'Changes the email only in the current repo',
+        'Changes the email for all of the user\'s repos',
+        'Changes the email on GitHub.com',
+        'Verifies whether your email is authenticated',
+      ],
+      correctIndex: 1,
+      explanation: '`--global` writes to ~/.gitconfig which covers all of the user\'s repos.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Work and personal accounts use different emails. What do you do?',
+      options: [
+        'Change --global every time I switch projects',
+        'Set --global to personal and override without --global in work repos',
+        'Always use the same email',
+        'Impossible — you must reinstall Git',
+      ],
+      correctIndex: 1,
+      explanation: 'Local repo config overrides global. The standard approach.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Without `init.defaultBranch`, new repos may default to `master` on older Git versions.',
+      correct: true,
+      explanation: 'Git ≥ 2.28 supports it; before 2.28 you renamed after `git init` with `git branch -m main`.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Command to see your full global config.',
+      template: 'git config --list --___',
+      answer: 'global',
+      caseSensitive: false,
+      explanation: '`git config --list --global` lists only global-level variables.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Why is "main" preferred over "master" as the primary branch?',
+      options: [
+        'It is shorter',
+        'Modern inclusive convention adopted by GitHub/GitLab',
+        'master does not work on Linux',
+        'Only "main" supports merge',
+      ],
+      correctIndex: 1,
+      explanation: 'Cultural shift in 2020-2021; default in platforms and new books.',
+    },
+  ]}
+/>
+
+---
+
+## Practical exercise
+
+<Exercise
+  id="git-config-exercise"
+  title="Config command builder"
+  description="Implement a function that builds the git config command from a key and value, adding --global only when the key is identity (user.name, user.email)."
+  language="javascript"
+  starterCode={`function buildConfigCmd(key, value) {
+  // Returns: git config --global user.email "x@y.com"
+  // Adds --global only when key starts with "user."
+  return '';
+}
+
+const a = buildConfigCmd('user.email', 'me@x.com');
+const b = buildConfigCmd('color.ui', 'auto');
+console.log(a);
+console.log(b);`}
+  solution={`function buildConfigCmd(key, value) {
+  const flag = key.startsWith('user.') ? '--global ' : '';
+  return \`git config \${flag}\${key} "\${value}"\`;
+}
+const a = buildConfigCmd('user.email', 'me@x.com');
+const b = buildConfigCmd('color.ui', 'auto');
+console.log(a);
+console.log(b);`}
+  hints={[
+    'String.prototype.startsWith tells you if the key begins with "user.".',
+    'Use template literals to assemble the final string.',
+  ]}
+  tests={[
+    {
+      description: 'user.email gets --global',
+      assert: 'buildConfigCmd("user.email","x@y.com") === \'git config --global user.email "x@y.com"\'',
+    },
+    {
+      description: 'color.ui no --global',
+      assert: 'buildConfigCmd("color.ui","auto") === \'git config color.ui "auto"\'',
+    },
+  ]}
+/>
+
+---
+
+Next lesson: **create your first repository** and make a real first commit.
