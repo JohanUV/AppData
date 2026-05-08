@@ -1,0 +1,279 @@
+## ETL vs ELT: cuándo usar cada uno
+
+**ETL** (Extract → Transform → Load) y **ELT** (Extract → Load →
+Transform) son los dos paradigmas de pipelines de datos. La diferencia
+está en **dónde** ocurre la transformación: antes de cargar al
+warehouse (ETL) o después (ELT). En 2026 el péndulo se ha inclinado
+fuertemente hacia ELT, pero ambos siguen vivos.
+
+### El flujo
+
+<Diagram type="mermaid">
+{`flowchart LR
+  subgraph ETL
+    A1[Source] --> B1[Extract] --> C1[Transform<br/>en Spark / Python]
+    C1 --> D1[(Warehouse)]
+  end
+  subgraph ELT
+    A2[Source] --> B2[Extract] --> D2[(Warehouse<br/>raw)]
+    D2 -->|SQL| E2[(Warehouse<br/>transformed)]
+  end`}
+</Diagram>
+
+### ETL clásico
+
+Los datos se extraen del source, se procesan en una capa intermedia
+(servidor con Spark, Python, herramienta como Informatica), y solo los
+datos limpios y agregados llegan al warehouse.
+
+**Pros:**
+- Warehouse limpio: solo data útil entra.
+- Control sobre el procesamiento (puedes hacer lógica compleja antes
+  de cargar).
+- Adecuado cuando warehouse es caro o limitado en compute.
+
+**Contras:**
+- Si la lógica cambia, hay que re-procesar (los datos crudos no están
+  en warehouse).
+- Pipeline más largo: extracción + transformación + load.
+- Ingenieros de datos tienen que escribir mucho Python/Scala.
+
+### ELT moderno
+
+Los datos crudos se vuelcan al warehouse tal cual. La transformación
+ocurre **dentro** del warehouse, con SQL, ejecutándose sobre el motor
+columnar.
+
+**Pros:**
+- **Raw data preservada**: si el modelo cambia, re-procesas con SQL,
+  los datos siguen ahí.
+- **SQL > Python para transformaciones**: más analistas saben SQL que
+  Python; mantenibilidad mucho mejor.
+- **Motores columnares modernos** (BigQuery, Snowflake) hacen
+  transformaciones brutalmente rápidas.
+- **dbt** lo hace trivial: SQL + version control + tests.
+
+**Contras:**
+- Cuesta storage (raw + transformed). En motores modernos es barato.
+- Datos sensibles llegan a warehouse antes de filtrarse: ojo con PII.
+- La query de transformación corre con el costo del warehouse (en
+  BigQuery: $5/TB scanned).
+
+### Quien gana en 2026
+
+Para 95% de casos: **ELT**. Por dos razones:
+
+1. **dbt** popularizó el patrón. Una stack moderna típica:
+   - Extract + Load: Fivetran, Airbyte (managed) o un script Python.
+   - Transform: dbt en BigQuery/Snowflake/Redshift.
+
+2. **Storage es barato, agility es cara**. Mantener raw data te
+   permite cambiar la lógica sin re-extraer del source.
+
+ETL clásico sigue siendo mejor cuando:
+
+- Source data es enorme y el warehouse tiene compute limitado (no es
+  el caso de BigQuery/Snowflake/Redshift modernos).
+- Compliance / PII: tienes que filtrar antes de cargar (raros).
+- Stack legacy: ya tienes Spark + Hive y migrar es caro.
+
+### Patrones comunes de ELT
+
+**Capas medallion (Bronze / Silver / Gold)**:
+
+<AnnotatedCode
+  language="sql"
+  filename="medallion.sql"
+  annotations={[
+    {
+      match: 'raw.events',
+      title: 'Bronze: raw',
+      body: 'Datos tal cual llegaron del source. Sin transformaciones, ni siquiera limpieza de tipos. JSON, strings, lo que sea.',
+    },
+    {
+      match: 'staging.events',
+      title: 'Silver: cleaned',
+      body: 'Tipos correctos, columnas renombradas (snake_case), validaciones básicas. Una fila por evento.',
+    },
+    {
+      match: 'marts.daily_kpis',
+      title: 'Gold: agregada por consumo',
+      body: 'Vistas pre-calculadas para BI/ML. Star schema, agregaciones, joins enriquecidos.',
+    },
+  ]}
+>
+{`-- Bronze (raw)
+CREATE TABLE raw.events AS
+SELECT * FROM external_storage('s3://bucket/events/');
+
+-- Silver (cleaned, typed)
+CREATE TABLE staging.events AS
+SELECT
+    payload->>'user_id' AS user_id,
+    (payload->>'amount')::DECIMAL AS amount,
+    (payload->>'event_at')::TIMESTAMP AS event_at
+FROM raw.events
+WHERE payload->>'user_id' IS NOT NULL;
+
+-- Gold (mart)
+CREATE TABLE marts.daily_kpis AS
+SELECT date_trunc('day', event_at) AS day,
+       COUNT(DISTINCT user_id) AS dau,
+       SUM(amount) AS revenue
+FROM staging.events
+GROUP BY 1;`}
+</AnnotatedCode>
+
+### Idempotencia: la regla de oro
+
+Tu pipeline debe ser **idempotente**: correrlo 2 veces produce el mismo
+resultado. Esto es crítico porque los pipelines fallan y se reintentan.
+
+```sql
+-- ❌ No idempotente: cada run inserta duplicados
+INSERT INTO marts.daily_kpis SELECT ... FROM staging.events;
+
+-- ✓ Idempotente: borra y reescribe
+DELETE FROM marts.daily_kpis WHERE day = '2026-05-15';
+INSERT INTO marts.daily_kpis SELECT ... FROM staging.events WHERE date_trunc('day', event_at) = '2026-05-15';
+
+-- ✓ Mejor con MERGE / UPSERT
+MERGE INTO marts.daily_kpis t
+USING (SELECT ... FROM staging.events WHERE ...) s
+ON t.day = s.day
+WHEN MATCHED THEN UPDATE SET ...
+WHEN NOT MATCHED THEN INSERT ...;
+```
+
+dbt maneja esto por ti con materializaciones (`view`, `table`,
+`incremental`).
+
+### Errores comunes
+
+- **Mover lógica del warehouse a Python sin razón**: tienes SQL
+  potente, úsalo.
+- **No persistir raw data**: cambias la lógica, te toca re-extraer
+  histórico (que tal vez ya no exista).
+- **Pipelines no idempotentes**: una falla en medio crea duplicados o
+  data missing.
+- **Sin tests sobre las transformaciones**: dbt resuelve esto con
+  `dbt test`.
+- **Mezclar Bronze/Silver/Gold sin nomenclatura clara**: cualquiera
+  consulta cualquier capa, gradualmente todo se rompe.
+
+### Para seguir aprendiendo
+
+- [The Modern Data Stack — dbt blog](https://www.getdbt.com/blog)
+- [Designing Data-Intensive Applications](https://dataintensive.net/) — capítulo 10.
+
+---
+
+## Quiz
+
+<Quiz
+  id="etl-vs-elt-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Diferencia clave entre ETL y ELT:',
+      options: [
+        'ETL usa Python, ELT usa SQL',
+        'ETL transforma antes de cargar al warehouse; ELT carga raw y transforma con SQL dentro',
+        'Son sinónimos',
+        'ELT es más viejo',
+      ],
+      correctIndex: 1,
+      explanation: 'El orden cambia: T va antes (ETL) o después (ELT) del Load.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'En ELT, los datos crudos viven en el warehouse y permiten re-procesar sin volver al source.',
+      correct: true,
+      explanation: 'Esa es una de las grandes ventajas: agility ante cambios de modelo.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: '¿Qué significa "idempotente" en pipelines?',
+      options: [
+        'Se ejecuta una sola vez',
+        'Correrlo N veces produce el mismo resultado',
+        'No tiene side effects',
+        'Solo SQL puede ser idempotente',
+      ],
+      correctIndex: 1,
+      explanation: 'Crítico para retries: sin idempotencia, retries crean duplicados.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Capas Bronze/Silver/Gold en orden:',
+      template: 'Bronze → ___ → Gold',
+      answer: 'Silver',
+      caseSensitive: false,
+      explanation: 'Raw → cleaned → mart.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'En 2026, el patrón dominante para nuevas stacks es:',
+      options: ['ETL', 'ELT con dbt + warehouse columnar', 'No hay ganador', 'Hadoop'],
+      correctIndex: 1,
+      explanation: 'Storage barato + SQL + dbt = ELT gana en mantenibilidad.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="etl-vs-elt-exercise"
+  title="Detector de idempotencia"
+  description="Implementa `isIdempotent(sqlBlock)` que detecte si un bloque SQL parece idempotente. Heurísticas: contiene MERGE / TRUNCATE+INSERT / DELETE+INSERT con WHERE → idempotente. Solo INSERT INTO sin condicion → no idempotente."
+  language="javascript"
+  starterCode={`function isIdempotent(sql) {
+  return false;
+}
+
+console.log(isIdempotent('INSERT INTO t SELECT * FROM s'));                    // false
+console.log(isIdempotent('TRUNCATE TABLE t; INSERT INTO t SELECT * FROM s'));   // true
+console.log(isIdempotent('MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE'));  // true`}
+  solution={`function isIdempotent(sql) {
+  const s = sql.toUpperCase();
+  if (/\\bMERGE\\s+INTO\\b/.test(s)) return true;
+  if (/\\bTRUNCATE\\b/.test(s) && /\\bINSERT\\b/.test(s)) return true;
+  if (/\\bDELETE\\b.*\\bWHERE\\b/.test(s) && /\\bINSERT\\b/.test(s)) return true;
+  return false;
+}
+console.log(isIdempotent('INSERT INTO t SELECT * FROM s'));
+console.log(isIdempotent('TRUNCATE TABLE t; INSERT INTO t SELECT * FROM s'));
+console.log(isIdempotent('MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE'));`}
+  hints={[
+    'Toupper para case-insensitive.',
+    'MERGE/TRUNCATE+INSERT/DELETE+INSERT son idempotentes.',
+  ]}
+  tests={[
+    {
+      description: 'INSERT puro no es idempotente',
+      assert: 'isIdempotent("INSERT INTO t SELECT 1") === false',
+    },
+    {
+      description: 'MERGE sí',
+      assert: 'isIdempotent("MERGE INTO t USING s ON x") === true',
+    },
+    {
+      description: 'TRUNCATE + INSERT sí',
+      assert: 'isIdempotent("TRUNCATE TABLE t; INSERT INTO t SELECT 1") === true',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **introducción a Apache Airflow**.

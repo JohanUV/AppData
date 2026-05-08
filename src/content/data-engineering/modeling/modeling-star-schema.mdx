@@ -1,0 +1,300 @@
+## Star schema
+
+El **star schema** es el modelo dimensional más usado en warehouses
+analíticos. Lo inventó Ralph Kimball en los 90s y, 30 años después,
+sigue siendo el estándar. Si trabajas con BI, dashboards o reports
+sobre un warehouse, vas a ver star schemas todos los días.
+
+### La idea
+
+Una tabla central de **hechos** (eventos numéricos: ventas, clicks,
+impresiones) rodeada de tablas de **dimensiones** (atributos
+descriptivos: clientes, productos, fechas).
+
+<Diagram type="mermaid">
+{`erDiagram
+  fact_sales }o--|| dim_customer : has
+  fact_sales }o--|| dim_product : has
+  fact_sales }o--|| dim_date : has
+  fact_sales }o--|| dim_store : has
+  fact_sales {
+    int sale_id
+    int customer_key
+    int product_key
+    int date_key
+    int store_key
+    decimal amount
+    int quantity
+  }
+  dim_customer {
+    int customer_key
+    string name
+    string country
+    string segment
+  }
+  dim_product {
+    int product_key
+    string name
+    string category
+    string brand
+  }
+  dim_date {
+    int date_key
+    date date
+    int year
+    int quarter
+    int month
+    string day_of_week
+  }
+  dim_store {
+    int store_key
+    string name
+    string city
+    string region
+  }`}
+</Diagram>
+
+### Hechos vs dimensiones
+
+**Tabla de hechos (fact)**:
+
+- Mide algo: cantidades, montos, conteos.
+- Crece rápido (millones-billones de filas).
+- Mayoría son foreign keys + métricas numéricas.
+- Granularidad explícita: "una fila por venta", "una fila por
+  click", "una fila por sesión".
+
+**Tablas de dimensiones (dim)**:
+
+- Describen contexto: quién, qué, dónde, cuándo.
+- Crecen lento.
+- Atributos descriptivos (strings, fechas).
+- Surrogate keys (claves sintéticas autogeneradas).
+
+### Por qué este modelo gana
+
+```sql
+-- Top productos por país en Q1
+SELECT
+  c.country,
+  p.name AS product,
+  SUM(f.amount) AS revenue
+FROM fact_sales f
+JOIN dim_customer c USING (customer_key)
+JOIN dim_product p USING (product_key)
+JOIN dim_date d USING (date_key)
+WHERE d.quarter = 1 AND d.year = 2026
+GROUP BY 1, 2
+ORDER BY 1, revenue DESC;
+```
+
+3 joins, todos siguiendo el mismo patrón fact↔dim. El optimizador del
+motor analítico está hyper-tuneado para este patrón. Comparado con un
+schema normalizado (8+ joins), es órdenes de magnitud más rápido.
+
+### Granularidad: la decisión clave
+
+Antes de modelar fact_sales, decide la **grain** (granularidad):
+
+- **Por línea de orden**: una fila por (orden, producto). La más
+  detallada — soporta cualquier query.
+- **Por orden**: una fila por orden, total agregado. Pierdes
+  información de productos individuales.
+- **Por día/cliente/producto**: una fila por combinación, ya
+  agregada. Lo más resumido — más rápido pero menos flexible.
+
+Regla: empieza con la grain más fina que tu volumen tolere. Vista
+agregada se calcula derivada; lo inverso no.
+
+### Surrogate keys
+
+<AnnotatedCode
+  language="sql"
+  filename="surrogate.sql"
+  annotations={[
+    {
+      match: 'customer_key BIGINT',
+      title: 'Surrogate key',
+      body: 'Clave sintética autogenerada (BIGINT secuencial). Independiente del business id (customer_id natural). Ventaja: si el sistema fuente cambia el id natural, no rompes el warehouse.',
+    },
+    {
+      match: 'natural_id',
+      title: 'Business key',
+      body: 'El id que viene del sistema source (Postgres, Salesforce). Lo guardas para reconciliar pero NO lo usas como FK en facts.',
+    },
+    {
+      match: 'effective_from / effective_to',
+      title: 'Versionado SCD',
+      body: 'Permite tener historial: cuándo este cliente vivía en X país. Lección 5 del módulo cubre SCD a fondo.',
+    },
+  ]}
+>
+{`CREATE TABLE dim_customer (
+  customer_key BIGINT PRIMARY KEY,        -- surrogate
+  natural_id   VARCHAR(50),                -- del source (e.g. Postgres customers.id)
+  name         VARCHAR(200),
+  country      VARCHAR(100),
+  segment      VARCHAR(50),
+  effective_from DATE,
+  effective_to   DATE,
+  is_current   BOOLEAN
+);
+
+CREATE TABLE fact_sales (
+  sale_id      BIGINT,
+  customer_key BIGINT REFERENCES dim_customer(customer_key),  -- FK al surrogate
+  product_key  BIGINT,
+  date_key     INT,
+  amount       DECIMAL(12, 2),
+  quantity     INT
+);`}
+</AnnotatedCode>
+
+### Tipos de hechos
+
+- **Aditivos** (los más amigables): `amount`, `quantity` — se pueden
+  sumar en cualquier dimensión.
+- **Semi-aditivos**: `inventory_balance` — se suma en tiempo pero no
+  por dimensiones (suma de inventario por producto sí; por día no
+  tiene sentido, usarías el balance de fin de día).
+- **No-aditivos**: `unit_price`, `ratio` — no se suman; promedios o
+  weighted averages.
+
+### dim_date: la dimensión que siempre necesitas
+
+```sql
+CREATE TABLE dim_date (
+  date_key INT PRIMARY KEY,         -- 20260515
+  date     DATE,
+  year     INT,
+  quarter  INT,
+  month    INT,
+  month_name VARCHAR(20),
+  day      INT,
+  day_of_week VARCHAR(10),
+  is_weekend BOOLEAN,
+  is_holiday BOOLEAN,
+  fiscal_year INT,
+  fiscal_quarter INT
+);
+```
+
+Pre-poblada con varios años. Tener esto te ahorra `EXTRACT` repetidos
+en cada query y soporta lógica de calendario fiscal.
+
+### Errores comunes
+
+- **Decidir grain mal**: si rolas a "por día por país", olvídate de
+  reportes por hora.
+- **Sin surrogate keys**: cuando el source cambia ids o se migra,
+  todo el warehouse rompe.
+- **Dimensiones mutables**: cambiar el `country` de un cliente sin
+  versionar pierde historia (ver lección de SCD).
+- **Hechos no-aditivos sumados ingenuamente**: promedio de
+  promedios ≠ promedio total.
+- **Demasiadas dim**: 30 dimensiones en una fact = ETL pesadísimo.
+  Refactoriza o usa snowflake.
+
+### Para seguir aprendiendo
+
+- [Kimball Group — Star Schema basics](https://www.kimballgroup.com/data-warehouse-business-intelligence-resources/kimball-techniques/dimensional-modeling-techniques/)
+- [The Data Warehouse Toolkit — Kimball](https://www.amazon.com/Data-Warehouse-Toolkit-Definitive-Dimensional/dp/1118530802)
+
+---
+
+## Quiz
+
+<Quiz
+  id="modeling-star-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Qué describe mejor un star schema?',
+      options: [
+        'Tabla central de hechos rodeada de tablas dimensionales',
+        'Schema 4FN',
+        'Schema con muchos índices',
+        'Un tipo de motor',
+      ],
+      correctIndex: 0,
+      explanation: 'Fact al centro, dims alrededor — forma de estrella.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '¿Para qué sirve la surrogate key?',
+      options: [
+        'Decoración',
+        'Aislar el warehouse de cambios en ids del sistema source',
+        'Acelerar joins',
+        'Encriptar',
+      ],
+      correctIndex: 1,
+      explanation: 'Estabilidad ante cambios en sources + soporte para SCD.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Decidir la granularidad (grain) es la decisión más importante al modelar una fact.',
+      correct: true,
+      explanation: 'Define qué queries son posibles después.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Tipo de hecho que NO se puede sumar:',
+      template: 'no-___',
+      answer: 'aditivo',
+      caseSensitive: false,
+      explanation: 'No-aditivo: ratio, precio unitario.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'En star schema, una query analítica típica hace:',
+      options: [
+        '8+ joins',
+        'Pocos joins fact↔dim siguiendo el mismo patrón',
+        'Sin joins',
+        'Solo subqueries',
+      ],
+      correctIndex: 1,
+      explanation: 'Por eso es óptimo para warehouses.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="modeling-star-exercise"
+  title="Generador de date_key"
+  description="Implementa `dateKey(date)` que dada una string 'YYYY-MM-DD' devuelva el integer YYYYMMDD."
+  language="javascript"
+  starterCode={`function dateKey(date) {
+  return 0;
+}
+
+console.log(dateKey('2026-05-15'));   // 20260515`}
+  solution={`function dateKey(date) {
+  return parseInt(date.replace(/-/g, ''), 10);
+}
+console.log(dateKey('2026-05-15'));`}
+  hints={[
+    'Quita los guiones y parsea a int.',
+  ]}
+  tests={[
+    { description: 'fecha normal', assert: 'dateKey("2026-05-15") === 20260515' },
+    { description: 'principio de año', assert: 'dateKey("2026-01-01") === 20260101' },
+    { description: 'fin de año', assert: 'dateKey("2025-12-31") === 20251231' },
+  ]}
+/>
+
+---
+
+Próxima lección: **snowflake schema** — la variante normalizada del star.

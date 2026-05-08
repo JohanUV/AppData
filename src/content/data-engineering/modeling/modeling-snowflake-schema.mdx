@@ -1,0 +1,230 @@
+## Snowflake schema
+
+El **snowflake schema** es una variante del star schema donde las
+dimensiones se **normalizan en sub-dimensiones**. En lugar de una
+`dim_product` con todas las columnas, tienes `dim_product` →
+`dim_category` → `dim_department`. La forma resultante recuerda a un
+copo de nieve, de ahí el nombre.
+
+### Star vs Snowflake
+
+<Diagram type="mermaid">
+{`flowchart TB
+  subgraph Star
+    F1[fact_sales] --- D1[dim_product<br/>name, category, dept]
+    F1 --- D2[dim_customer<br/>name, country, region]
+  end
+  subgraph Snowflake
+    F2[fact_sales] --- DP[dim_product] --- DC[dim_category] --- DD[dim_department]
+    F2 --- DCu[dim_customer] --- DCt[dim_country] --- DR[dim_region]
+  end`}
+</Diagram>
+
+En star, `dim_product` tiene `category` y `department` como columnas
+duplicadas (una fila por producto, "Electronics" repetido 1000 veces).
+En snowflake, separas a `dim_category` y `dim_department` —
+normalización clásica 3FN.
+
+### Cuándo usar snowflake
+
+**A favor:**
+
+- Si la dimensión tiene **muchas columnas redundantes** (gran
+  cardinalidad de productos pero pocas categorías), snowflake ahorra
+  storage.
+- Cuando los atributos de subcategorías cambian frecuentemente: cambias
+  un row en `dim_category` en vez de mil en `dim_product`.
+- Compliance / fuente única de verdad: si el departamento se gestiona
+  en otro sistema, una tabla separada hace más fácil sincronizar.
+
+**En contra:**
+
+- Joins extra en queries — performance peor que star puro.
+- Más complejidad para usuarios de BI: tienen que entender 5 tablas en
+  vez de 1.
+- En warehouses columnares (BigQuery, Snowflake — la BD), el ahorro de
+  storage es marginal porque la compresión columnar ya elimina
+  redundancia.
+
+### El consenso moderno
+
+En 2026, la mayoría de equipos prefiere **star** sobre snowflake en
+warehouses columnares. Razones:
+
+1. Storage es barato; queries rápidas son caras (en tiempo y
+   $/query).
+2. Los motores columnares comprimen strings repetidos casi gratis.
+3. Modelos más simples → adopción más fácil por analistas.
+
+Snowflake sigue siendo válido en:
+
+- Lakehouses con datos compartidos entre múltiples consumidores (cada
+  uno reusa las dims).
+- Sistemas legacy con BD relacionales tradicionales.
+- Cuando la dimensión es enorme y pocas columnas son específicas.
+
+### Ejemplo lado a lado
+
+**Star:**
+
+```sql
+SELECT
+  c.country,
+  p.category,
+  SUM(f.amount)
+FROM fact_sales f
+JOIN dim_customer c USING (customer_key)
+JOIN dim_product p USING (product_key)
+GROUP BY 1, 2;
+```
+
+**Snowflake:**
+
+```sql
+SELECT
+  ct.name AS country,
+  cat.name AS category,
+  SUM(f.amount)
+FROM fact_sales f
+JOIN dim_customer c USING (customer_key)
+JOIN dim_country ct ON c.country_key = ct.country_key
+JOIN dim_product p USING (product_key)
+JOIN dim_category cat ON p.category_key = cat.category_key
+GROUP BY 1, 2;
+```
+
+5 joins vs 3. Aunque el query plan puede optimizar bien, es más SQL
+para escribir y mantener.
+
+### Galaxy / fact constellation
+
+Cuando tienes **varias facts** compartiendo dimensiones, se llama
+"galaxy":
+
+```
+dim_customer ─── fact_sales
+            └─── fact_returns
+            └─── fact_support_tickets
+```
+
+Es lo más común en warehouses reales. No es un schema separado, es la
+combinación natural cuando un dominio tiene varias mesas de hechos.
+
+### Errores comunes
+
+- **Snowflake porque "es más limpio"** sin medir performance: queries
+  más lentas, BI users frustrados.
+- **Star pero con sub-dimensiones inconsistentes**: dim_product tiene
+  category, dim_category también — siempre se desincronizan.
+- **No documentar qué schema sigues**: equipos rotan, ETL nuevos no
+  saben si normalizar o desnormalizar.
+
+### Para seguir aprendiendo
+
+- [Star vs Snowflake — Kimball](https://www.kimballgroup.com/data-warehouse-business-intelligence-resources/kimball-techniques/dimensional-modeling-techniques/)
+- [Snowflake company docs on dimensional modeling](https://docs.snowflake.com/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="modeling-snowflake-quiz"
+  xpReward={60}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Qué diferencia un snowflake schema de un star?',
+      options: [
+        'El snowflake usa Postgres',
+        'En snowflake las dimensiones se normalizan en sub-dimensiones',
+        'Snowflake no soporta joins',
+        'Son lo mismo',
+      ],
+      correctIndex: 1,
+      explanation: 'Star: dims planas. Snowflake: dims con sub-dims (3FN).',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'En warehouses columnares modernos, snowflake suele ser preferido sobre star.',
+      correct: false,
+      explanation: 'Lo contrario: storage es barato, joins son caros, star gana.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Galaxy schema (fact constellation) significa:',
+      options: [
+        'Un solo fact con muchas dims',
+        'Varias facts compartiendo dimensiones',
+        'Schema no normalizado',
+        'Schema en BigQuery',
+      ],
+      correctIndex: 1,
+      explanation: 'Múltiples facts comparten dim_customer, dim_date, etc.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'En un star schema típico, la fact se conecta a las dims con:',
+      template: '___ keys',
+      answer: 'foreign',
+      caseSensitive: false,
+      explanation: 'FK desde fact al surrogate key de cada dim.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Una razón válida para usar snowflake:',
+      options: [
+        'Es la opción nueva',
+        'Cuando varios consumidores reusan las mismas sub-dims y conviene tenerlas separadas',
+        'Siempre es más rápido',
+        'No requiere ETL',
+      ],
+      correctIndex: 1,
+      explanation: 'Reutilización entre consumidores justifica el costo de joins.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="modeling-snowflake-exercise"
+  title="Contar joins en una query"
+  description="Implementa `countJoins(query)` que cuente la cantidad de JOIN en una query SQL (case-insensitive). LEFT JOIN, INNER JOIN, JOIN cuentan como 1."
+  language="javascript"
+  starterCode={`function countJoins(query) {
+  return 0;
+}
+
+console.log(countJoins('SELECT * FROM a JOIN b LEFT JOIN c'));   // 2
+console.log(countJoins('SELECT * FROM a'));                       // 0`}
+  solution={`function countJoins(query) {
+  const matches = query.match(/\\bJOIN\\b/gi);
+  return matches ? matches.length : 0;
+}
+console.log(countJoins('SELECT * FROM a JOIN b LEFT JOIN c'));
+console.log(countJoins('SELECT * FROM a'));`}
+  hints={[
+    'Regex global e insensitive: /\\bJOIN\\b/gi.',
+    'match devuelve null si no hay matches.',
+  ]}
+  tests={[
+    { description: 'sin joins', assert: 'countJoins("SELECT * FROM a") === 0' },
+    { description: 'un join', assert: 'countJoins("a JOIN b") === 1' },
+    { description: 'mezcla de tipos', assert: 'countJoins("a INNER JOIN b LEFT JOIN c") === 2' },
+    { description: 'case insensitive', assert: 'countJoins("a join b Join c") === 2' },
+  ]}
+/>
+
+---
+
+Próxima lección: **Slowly Changing Dimensions** — cómo manejar dims que
+cambian con el tiempo.

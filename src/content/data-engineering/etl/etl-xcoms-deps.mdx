@@ -1,0 +1,301 @@
+## XComs y dependencias
+
+**XCom** (cross-communication) es el mecanismo de Airflow para pasar
+**datos pequeños** entre tareas. Esta lección cubre cómo usarlos
+correctamente, qué NO meterles, y cómo expresar dependencias
+complejas (paralelo, ramas condicionales, fan-in/fan-out).
+
+### Cómo funciona XCom
+
+Cada vez que un PythonOperator (o @task) retorna un valor, Airflow lo
+serializa con pickle y lo guarda en la **metadata DB**. Otra tarea lo
+lee con `xcom_pull`.
+
+```python
+def extract(**context):
+    return [{'id': 1}, {'id': 2}]    # va a XCom
+
+def transform(**context):
+    ti = context['ti']
+    records = ti.xcom_pull(task_ids='extract')
+    return [r for r in records if r['id'] > 0]
+```
+
+Con TaskFlow API, lo mismo es transparente:
+
+```python
+@task
+def extract():
+    return [{'id': 1}, {'id': 2}]
+
+@task
+def transform(records):    # records viene del XCom de extract
+    return [r for r in records if r['id'] > 0]
+
+records = extract()
+transform(records)
+```
+
+### Qué NO meter en XCom
+
+- **Datasets grandes**. Como Airflow lo serializa a la metadata DB,
+  meter 1GB de DataFrame es disastre. Regla: < 48KB (default size
+  limit en algunos backends).
+- **Objetos no serializables**. Conexiones, file handles, modelos ML.
+- **Datos sensibles**. Quedan en BD; cualquiera con acceso los lee.
+
+Para datasets grandes: persiste en S3/GCS y pasa por XCom **el path**:
+
+```python
+@task
+def extract():
+    df = pd.read_sql(...)
+    path = f's3://staging/orders-{{ ds }}.parquet'
+    df.to_parquet(path)
+    return path                      # solo el path en XCom
+
+@task
+def transform(path):
+    df = pd.read_parquet(path)
+    ...
+```
+
+### XCom backends custom
+
+Para datasets más grandes sin reescribir todo, configuras un **custom
+backend** que serializa a S3 transparentemente:
+
+```python
+# airflow.cfg
+xcom_backend = airflow.providers.amazon.aws.xcoms.s3_xcom_backend.S3XComBackend
+```
+
+XCom debajo guarda en S3; el código sigue usando `xcom_pull` /
+returns como siempre.
+
+### Dependencias complejas
+
+**Paralelo (fan-out):**
+
+```python
+extract = PythonOperator(...)
+clean_a = PythonOperator(...)
+clean_b = PythonOperator(...)
+clean_c = PythonOperator(...)
+load = PythonOperator(...)
+
+extract >> [clean_a, clean_b, clean_c] >> load
+```
+
+`>>` con lista significa "después de extract, las 3 cleans en paralelo,
+y cuando todas terminan, load".
+
+**Fan-in:**
+
+```python
+[extract_stripe, extract_shopify, extract_paypal] >> consolidate >> load
+```
+
+**TaskFlow equivalente:**
+
+```python
+@task
+def extract(source): ...
+
+stripe = extract('stripe')
+shopify = extract('shopify')
+paypal = extract('paypal')
+
+@task
+def consolidate(s, sh, p): ...
+
+consolidate(stripe, shopify, paypal)
+```
+
+### Branching: ejecutar una rama según lógica
+
+```python
+from airflow.operators.python import BranchPythonOperator
+
+def choose_path(**context):
+    ds = context['ds']
+    if ds.endswith('-01'):
+        return 'monthly_full_load'
+    return 'daily_incremental'
+
+branch = BranchPythonOperator(
+    task_id='branch',
+    python_callable=choose_path,
+)
+
+monthly = PythonOperator(task_id='monthly_full_load', ...)
+daily = PythonOperator(task_id='daily_incremental', ...)
+join = EmptyOperator(task_id='join', trigger_rule='none_failed_min_one_success')
+
+branch >> [monthly, daily] >> join
+```
+
+`trigger_rule` ajusta cuándo `join` se ejecuta. Default es
+`all_success`, pero como una rama va a ser skipped, necesitas
+`none_failed_min_one_success`.
+
+### Trigger rules útiles
+
+- `all_success` (default): todas las upstream OK.
+- `all_failed`: todas las upstream fallaron.
+- `one_success`: al menos una OK (resto puede haber fallado).
+- `none_failed`: ninguna falló (skipped OK).
+- `none_failed_min_one_success`: ninguna falló y al menos una corrió.
+- `always`: corre sin importar nada.
+
+### Dynamic task mapping (Airflow 2.3+)
+
+<AnnotatedCode
+  language="python"
+  filename="dynamic.py"
+  annotations={[
+    {
+      match: '.expand(',
+      title: 'Generar tareas en runtime',
+      body: 'expand crea N copias de la task, una por elemento del iterable. El iterable puede ser estático o venir de otro XCom.',
+    },
+    {
+      match: 'paths=extract.output',
+      title: 'Encadenar dynamic',
+      body: 'extract devuelve lista; expand crea una process_file por elemento de esa lista. Paralelismo automático.',
+    },
+  ]}
+>
+{`@task
+def list_files():
+    return ['a.parquet', 'b.parquet', 'c.parquet']
+
+@task
+def process_file(path):
+    print(f'processing {path}')
+
+paths = list_files()
+process_file.expand(path=paths)`}
+</AnnotatedCode>
+
+Reemplaza el viejo SubDAG patrón que era horrible. Si tu pipeline tiene
+N items por procesar (donde N es dinámico), expand es la herramienta.
+
+### Errores comunes
+
+- **XCom con DataFrames grandes**: BD se hincha, scheduler lento.
+- **Olvidar trigger_rule en branching**: la rama no-tomada queda
+  skipped, downstream falla en cadena.
+- **Dependencias circulares accidentales**: Airflow las detecta y
+  rechaza el DAG.
+- **Confiar en orden de ejecución de tareas paralelas**: nunca lo
+  asumas; el executor decide.
+- **No documentar XComs**: el siguiente que toque el DAG no sabe qué
+  espera cada tarea.
+
+### Para seguir aprendiendo
+
+- [XComs docs](https://airflow.apache.org/docs/apache-airflow/stable/concepts/xcoms.html)
+- [Dynamic Task Mapping](https://airflow.apache.org/docs/apache-airflow/stable/concepts/dynamic-task-mapping.html)
+- [Trigger rules](https://airflow.apache.org/docs/apache-airflow/stable/concepts/dags.html#trigger-rules)
+
+---
+
+## Quiz
+
+<Quiz
+  id="etl-xcoms-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Para qué sirve XCom?',
+      options: [
+        'Esperar archivos en S3',
+        'Pasar pequeños valores entre tareas',
+        'Ejecutar bash',
+        'Reemplazar la BD',
+      ],
+      correctIndex: 1,
+      explanation: 'XCom = cross-communication entre tasks vía metadata DB.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Es buena práctica meter un DataFrame de 1GB en XCom.',
+      correct: false,
+      explanation: 'Pésima. Persiste en S3/GCS y pasa el path.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: '`extract >> [clean_a, clean_b] >> load` significa:',
+      options: [
+        'extract → clean_a → clean_b → load',
+        'extract corre, después clean_a y clean_b en paralelo, después load espera a ambas',
+        'load corre primero',
+        'Sintaxis inválida',
+      ],
+      correctIndex: 1,
+      explanation: 'Lista entre flechas = paralelo.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Para que un join task corra después de un branch (con ramas skipped):',
+      template: 'trigger_rule=\\\'___\\\'',
+      answer: 'none_failed_min_one_success',
+      caseSensitive: false,
+      explanation: 'none_failed_min_one_success ignora skipped pero requiere al menos una exitosa.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: '¿Qué hace `process.expand(path=paths)`?',
+      options: [
+        'Aumenta el timeout',
+        'Crea N copias de la task, una por cada elemento del iterable paths',
+        'Ejecuta una sola task más rápido',
+        'Branch dinámico',
+      ],
+      correctIndex: 1,
+      explanation: 'Dynamic task mapping: paralelismo runtime-defined.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="etl-xcoms-exercise"
+  title="Decisor de XCom vs storage externo"
+  description="Implementa `shouldUseExternalStorage(sizeBytes)` que devuelve true si el tamaño del payload es >= 48KB (47*1024)."
+  language="javascript"
+  starterCode={`function shouldUseExternalStorage(sizeBytes) {
+  return false;
+}
+
+console.log(shouldUseExternalStorage(1024));        // false
+console.log(shouldUseExternalStorage(50000));       // true`}
+  solution={`function shouldUseExternalStorage(sizeBytes) {
+  return sizeBytes >= 48 * 1024;
+}
+console.log(shouldUseExternalStorage(1024));
+console.log(shouldUseExternalStorage(50000));`}
+  hints={[
+    'Threshold: 48KB.',
+  ]}
+  tests={[
+    { description: 'pequeño OK en XCom', assert: 'shouldUseExternalStorage(1024) === false' },
+    { description: 'grande necesita external', assert: 'shouldUseExternalStorage(60000) === true' },
+    { description: 'borde justo arriba', assert: 'shouldUseExternalStorage(48*1024) === true' },
+  ]}
+/>
+
+---
+
+Próxima lección: **introducción a dbt**.

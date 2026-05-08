@@ -1,0 +1,274 @@
+## Normalización (1FN, 2FN, 3FN)
+
+La **normalización** es el proceso de organizar columnas y tablas en
+una base de datos para minimizar redundancia y prevenir anomalías
+(actualizar lo mismo en varios lugares y olvidar uno). Es la base
+del modelado **OLTP** (transaccional). En analytics OLAP (warehouse)
+intencionalmente se desnormaliza — pero hay que entender la
+normalización primero para saber qué se está rompiendo y por qué.
+
+### El problema que resuelve
+
+Imagina una tabla "todo en uno":
+
+```
+order_id | customer_name | customer_email | product | qty | price
+1        | Ana           | ana@x.com      | Mouse   | 2   | 30
+2        | Ana           | ana@x.com      | Teclado | 1   | 80
+3        | Beto          | beto@y.com     | Mouse   | 5   | 30
+```
+
+Problemas:
+
+- **Redundancia**: el email de Ana aparece en cada orden suya.
+- **Anomalía de actualización**: si Ana cambia email, hay que tocar
+  10 filas y arriesgar dejar una sin cambiar.
+- **Anomalía de inserción**: ¿cómo agregas un cliente sin orden? No
+  puedes (a menos que metas nulls feos).
+- **Anomalía de eliminación**: borras la única orden de un cliente y
+  pierdes su info.
+
+### 1FN: Primera Forma Normal
+
+Cada celda debe contener **un valor atómico** — sin listas, sin valores
+multi-campo.
+
+❌ No es 1FN:
+
+```
+order_id | products
+1        | "Mouse, Teclado"
+```
+
+✓ 1FN:
+
+```
+order_id | product
+1        | Mouse
+1        | Teclado
+```
+
+### 2FN: Segunda Forma Normal
+
+Está en 1FN **y** cada columna no-clave depende de la **clave completa**
+(no solo parte de ella, en claves compuestas).
+
+❌ Tabla `order_items` con clave `(order_id, product_id)`:
+
+```
+order_id | product_id | product_name | qty
+```
+
+`product_name` depende solo de `product_id`, no de la clave completa.
+Está mal — se duplica.
+
+✓ Separar:
+
+```
+order_items: (order_id, product_id, qty)
+products: (product_id, product_name)
+```
+
+### 3FN: Tercera Forma Normal
+
+Está en 2FN **y** ninguna columna no-clave depende **transitivamente**
+de la clave (no hay dependencias entre no-claves).
+
+❌ Tabla `customers`:
+
+```
+customer_id | name | city | country
+```
+
+Si `city` determina `country` (Bogotá → Colombia), entonces `country`
+depende transitivamente vía `city`. Mover el país a una tabla `cities`:
+
+```
+customers: (customer_id, name, city_id)
+cities: (city_id, name, country)
+```
+
+### El resultado: schema normalizado
+
+Para nuestro ejemplo del inicio, después de aplicar 3FN:
+
+<Diagram type="mermaid">
+{`erDiagram
+  customers ||--o{ orders : has
+  orders ||--o{ order_items : contains
+  products ||--o{ order_items : included_in
+  customers {
+    int customer_id
+    string name
+    string email
+  }
+  orders {
+    int order_id
+    int customer_id
+    timestamp created_at
+  }
+  products {
+    int product_id
+    string name
+    decimal price
+  }
+  order_items {
+    int order_id
+    int product_id
+    int qty
+  }`}
+</Diagram>
+
+Cada hecho aparece en un solo lugar; los IDs conectan tablas vía
+foreign keys.
+
+### Cuándo desnormalizar
+
+OLTP (Postgres, MySQL) → 3FN típicamente. Optimizado para:
+
+- Inserts/updates rápidos.
+- Sin redundancia ni anomalías.
+- Joins son baratos en motores OLTP con índices.
+
+OLAP (BigQuery, Snowflake) → frecuentemente desnormaliza:
+
+- Lecturas pesadas de columnas seleccionadas.
+- Joins en datasets gigantes son caros (incluso en columnar).
+- Storage es barato; copiar datos no es problema.
+
+Por eso en warehouses ves "wide tables" con cientos de columnas o
+schemas tipo star (próximas lecciones).
+
+### Errores comunes
+
+- **Normalizar a la fuerza en analytics**: 8 joins para una query
+  simple. Mueve a wide table si las queries lo justifican.
+- **Sobre-normalizar**: 4FN/5FN raramente añade valor en la práctica.
+- **No normalizar nada**: tabla "Excel" gigante con anomalías.
+- **Olvidar foreign keys** después de partir tablas. Sin FKs, los
+  joins son caóticos.
+
+### Para seguir aprendiendo
+
+- [Database Normalization — Wikipedia](https://en.wikipedia.org/wiki/Database_normalization)
+- [Vertabelo — Normalization Examples](https://vertabelo.com/blog/database-normalization/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="modeling-normalization-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Una tabla con `products` columna conteniendo "Mouse, Teclado"...',
+      options: [
+        'Está en 3FN',
+        'Viola 1FN — no atómico',
+        'Es OLAP-friendly',
+        'Es ideal',
+      ],
+      correctIndex: 1,
+      explanation: '1FN exige valores atómicos.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '¿Qué viola 3FN?',
+      options: [
+        'Listas en columnas',
+        'Columnas que dependen solo de parte de la clave compuesta',
+        'Columnas no-clave que dependen transitivamente de la clave (vía otra no-clave)',
+        'Foreign keys',
+      ],
+      correctIndex: 2,
+      explanation: '3FN: sin dependencias transitivas.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'En warehouses OLAP, normalizar a 3FN suele ser ideal.',
+      correct: false,
+      explanation: 'OLAP frecuentemente desnormaliza para evitar joins costosos.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Forma normal que exige valores atómicos.',
+      template: '___FN',
+      answer: '1',
+      caseSensitive: false,
+      explanation: 'Primera Forma Normal.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Anomalía de actualización es...',
+      options: [
+        'Update lento',
+        'Tener que actualizar el mismo dato en varios lugares (y arriesgar olvidos)',
+        'Update no permitido',
+        'Bug del motor',
+      ],
+      correctIndex: 1,
+      explanation: 'La razón principal por la que normalizamos.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="modeling-normalization-exercise"
+  title="Detector de violación 1FN"
+  description="Implementa `violatesFirstNormalForm(rows)` que devuelva true si alguna fila tiene un campo cuyo valor sea un array o una string con comas (indicando lista). False en caso contrario."
+  language="javascript"
+  starterCode={`function violatesFirstNormalForm(rows) {
+  return false;
+}
+
+console.log(violatesFirstNormalForm([{id:1, products:['a','b']}]));      // true
+console.log(violatesFirstNormalForm([{id:1, products:'a, b, c'}]));     // true
+console.log(violatesFirstNormalForm([{id:1, product:'mouse'}]));        // false`}
+  solution={`function violatesFirstNormalForm(rows) {
+  for (const r of rows) {
+    for (const v of Object.values(r)) {
+      if (Array.isArray(v)) return true;
+      if (typeof v === 'string' && /,\\s*[a-z]/i.test(v)) return true;
+    }
+  }
+  return false;
+}
+console.log(violatesFirstNormalForm([{id:1, products:['a','b']}]));
+console.log(violatesFirstNormalForm([{id:1, products:'a, b, c'}]));
+console.log(violatesFirstNormalForm([{id:1, product:'mouse'}]));`}
+  hints={[
+    'Recorre cada fila y cada valor.',
+    'Array.isArray detecta arrays.',
+    'Regex para detectar listas en string.',
+  ]}
+  tests={[
+    {
+      description: 'array detectado',
+      assert: 'violatesFirstNormalForm([{p:["a","b"]}]) === true',
+    },
+    {
+      description: 'CSV en string detectado',
+      assert: 'violatesFirstNormalForm([{p:"a, b"}]) === true',
+    },
+    {
+      description: 'valor atómico OK',
+      assert: 'violatesFirstNormalForm([{p:"mouse"}]) === false',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **OLTP vs OLAP**.

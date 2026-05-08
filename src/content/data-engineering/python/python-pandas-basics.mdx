@@ -1,0 +1,266 @@
+## Pandas fundamentos
+
+**Pandas** es la librería de Python para manipulación de datos
+tabulares. Si SQL es tu cuchillo en el warehouse, Pandas es tu cuchillo
+fuera del warehouse: archivos CSV, APIs, transformaciones complejas en
+memoria. Para un Data Engineer es herramienta diaria.
+
+### Las dos estructuras
+
+- **Series**: una columna unidimensional con índice.
+- **DataFrame**: tabla 2D (filas × columnas), donde cada columna es una
+  Series.
+
+```python
+import pandas as pd
+
+# Crear DataFrame desde diccionario
+df = pd.DataFrame({
+    'user_id': [1, 2, 3, 4],
+    'country': ['CO', 'MX', 'CO', 'AR'],
+    'amount': [100, 50, 200, 75],
+})
+print(df)
+```
+
+### Cargar datos
+
+```python
+df = pd.read_csv('payments.csv')
+df = pd.read_parquet('payments.parquet')
+df = pd.read_json('events.json', lines=True)
+df = pd.read_sql('SELECT * FROM payments', conn)
+```
+
+`read_parquet` es muchísimo más rápido que CSV para datasets grandes
+(formato columnar, compresión).
+
+### Inspección rápida
+
+```python
+df.head()           # primeras 5 filas
+df.tail(10)         # últimas 10
+df.info()           # tipos + memoria + nulls
+df.describe()       # stats: count, mean, std, min, max, quartiles
+df.shape            # (filas, columnas)
+df.columns.tolist()
+df.dtypes
+```
+
+`df.info()` es lo primero que corres con cualquier dataset nuevo. Te
+dice si hay nulls inesperados, si los tipos son los correctos, y cuánta
+RAM ocupa.
+
+### Selección
+
+<AnnotatedCode
+  language="python"
+  filename="select.py"
+  annotations={[
+    {
+      match: "df['country']",
+      title: 'Una columna → Series',
+      body: 'Notación con corchetes y nombre. Devuelve una Series.',
+    },
+    {
+      match: "df[['country', 'amount']]",
+      title: 'Varias columnas → DataFrame',
+      body: 'Lista de columnas dentro de los corchetes. Importante: dobles corchetes.',
+    },
+    {
+      match: 'df.iloc[0]',
+      title: 'Por posición',
+      body: 'iloc usa índices enteros (0-based). df.iloc[0] = primera fila; df.iloc[0:3] = primeras 3.',
+    },
+    {
+      match: "df.loc[df['country'] == 'CO']",
+      title: 'Por etiqueta + booleano',
+      body: 'loc usa etiquetas/labels y soporta máscaras booleanas. Lo más usado para filtrar.',
+    },
+  ]}
+>
+{`# Una columna
+df['country']
+
+# Varias columnas
+df[['country', 'amount']]
+
+# Por posición
+df.iloc[0]
+df.iloc[0:3]
+
+# Filtrado por condición
+df.loc[df['country'] == 'CO']
+df.loc[(df['country'] == 'CO') & (df['amount'] > 50)]`}
+</AnnotatedCode>
+
+Ojo con los operadores: `&` y `|` no `and`/`or` cuando filtras Series.
+Y siempre paréntesis alrededor de cada condición.
+
+### Modificar columnas
+
+```python
+# Crear columna calculada
+df['amount_with_tax'] = df['amount'] * 1.19
+
+# Renombrar
+df = df.rename(columns={'amount': 'gross_amount'})
+
+# Castear tipo
+df['user_id'] = df['user_id'].astype('int32')
+
+# Aplicar función
+df['country_code'] = df['country'].apply(lambda x: x.lower())
+```
+
+### Manejo de NaN
+
+```python
+df.isna().sum()                     # nulls por columna
+df.dropna()                          # filas con cualquier NaN
+df.dropna(subset=['amount'])         # solo si amount es NaN
+df.fillna(0)                         # rellenar con 0
+df['country'].fillna('unknown', inplace=False)
+```
+
+`inplace=True` modifica el DataFrame original sin devolver copia.
+Generalmente se evita: prefiere reasignar.
+
+### Diferencias clave con SQL
+
+| SQL | Pandas |
+|---|---|
+| `WHERE` | `df.loc[mask]` |
+| `SELECT col` | `df['col']` |
+| `ORDER BY` | `df.sort_values('col')` |
+| `GROUP BY` | `df.groupby('col')` (siguiente lección) |
+| `JOIN` | `df.merge(df2)` (siguiente lección) |
+| `LIMIT n` | `df.head(n)` |
+
+### Errores comunes
+
+- **`SettingWithCopyWarning`**. Cuando haces `df[df.x>0]['col'] = 1`,
+  Pandas no sabe si actualiza el original o una copia. Usa `.loc[]`
+  para ambos lados.
+- **Operadores Python `and`/`or` en filtros de Series**. Crashea con
+  "Truth value is ambiguous". Usa `&` y `|` con paréntesis.
+- **`for row in df` para iterar**: lentísimo. Casi siempre hay una
+  versión vectorizada (`apply`, `map`, operación columnar).
+- **No verificar `df.dtypes`**. Una columna numérica leída como string
+  rompe operaciones aritméticas silenciosamente.
+
+### Para seguir aprendiendo
+
+- [Pandas Documentation](https://pandas.pydata.org/docs/)
+- [10 minutes to pandas](https://pandas.pydata.org/docs/user_guide/10min.html)
+
+---
+
+## Quiz
+
+<Quiz
+  id="python-pandas-basics-quiz"
+  xpReward={60}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Diferencia entre Series y DataFrame?',
+      options: [
+        'Series es 2D, DataFrame es 1D',
+        'Series es 1D (una columna); DataFrame es 2D (varias columnas)',
+        'Son sinónimos',
+        'Series es más rápida',
+      ],
+      correctIndex: 1,
+      explanation: 'DataFrame = colección de Series compartiendo el mismo índice.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Filtras un DataFrame por dos condiciones. ¿Qué operador usas?',
+      options: ['and', '&', '+', 'AND'],
+      correctIndex: 1,
+      explanation: 'Series usan operadores element-wise: & y | (nunca and/or).',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Parquet es mucho más rápido que CSV para datasets grandes.',
+      correct: true,
+      explanation: 'Formato columnar + compresión + tipos preservados.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Función para ver tipos y nulls del DataFrame.',
+      template: 'df.___()',
+      answer: 'info',
+      caseSensitive: false,
+      explanation: 'df.info() resume tipos, memoria y nulls.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Quieres la primera fila por posición.',
+      options: ['df[0]', 'df.iloc[0]', 'df.loc[0]', 'df.first()'],
+      correctIndex: 1,
+      explanation: 'iloc indexa por posición entera; loc por etiqueta.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="python-pandas-basics-exercise"
+  title="Filtrar y proyectar"
+  description="Implementa `filterCountry(rows, country)` que dado un array de objetos y un código de país, devuelva sólo los objetos cuyo `country` coincida y proyecte sólo `user_id` y `amount`."
+  language="javascript"
+  starterCode={`function filterCountry(rows, country) {
+  return [];
+}
+
+const data = [
+  {user_id:1, country:'CO', amount:100, extra:'x'},
+  {user_id:2, country:'MX', amount:50},
+  {user_id:3, country:'CO', amount:200},
+];
+console.log(filterCountry(data, 'CO'));`}
+  solution={`function filterCountry(rows, country) {
+  return rows
+    .filter(r => r.country === country)
+    .map(r => ({ user_id: r.user_id, amount: r.amount }));
+}
+const data = [
+  {user_id:1, country:'CO', amount:100, extra:'x'},
+  {user_id:2, country:'MX', amount:50},
+  {user_id:3, country:'CO', amount:200},
+];
+console.log(filterCountry(data, 'CO'));`}
+  hints={[
+    'filter para WHERE; map para SELECT.',
+    'No incluyas la columna extra.',
+  ]}
+  tests={[
+    {
+      description: 'filtra correctamente',
+      assert: 'filterCountry([{country:"CO",user_id:1,amount:10}],"CO").length === 1',
+    },
+    {
+      description: 'omite columnas extra',
+      assert: 'Object.keys(filterCountry([{country:"CO",user_id:1,amount:10,x:9}],"CO")[0]).join(",") === "user_id,amount"',
+    },
+    {
+      description: 'sin matches',
+      assert: 'filterCountry([{country:"MX"}],"CO").length === 0',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **Pandas avanzado** — merge, pivot, groupby.

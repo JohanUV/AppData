@@ -1,0 +1,369 @@
+## Entornos virtuales y dependencias
+
+Python tiene un problema histórico: si instalas paquetes globalmente,
+chocan entre proyectos. El proyecto A necesita pandas 1.5; el B
+necesita 2.1. Sin aislamiento, el último que instalas pisa al
+anterior. **Entornos virtuales** son la solución.
+
+### venv: lo built-in
+
+```bash
+# Crear entorno
+python -m venv .venv
+
+# Activar
+source .venv/bin/activate         # Linux/macOS
+.venv\Scripts\activate             # Windows
+
+# Instalar paquetes (van solo al .venv)
+pip install pandas requests
+
+# Salir
+deactivate
+```
+
+`.venv/` es una carpeta con un Python aislado. Cuando lo activas, `pip
+install` y `python` apuntan ahí, no al sistema.
+
+**Siempre añade `.venv/` al `.gitignore`**. No se versiona.
+
+### requirements.txt: declarando dependencias
+
+```bash
+# Generar lista de lo instalado actualmente
+pip freeze > requirements.txt
+
+# Instalar lo declarado en otra máquina
+pip install -r requirements.txt
+```
+
+`pip freeze` te da algo así:
+
+```
+pandas==2.1.3
+numpy==1.26.0
+requests==2.31.0
+```
+
+Estos pins exactos son **buenos para reproducibilidad** (mismo entorno
+en dev/CI/prod) pero malos para desarrollo (cualquier upgrade requiere
+manual). Patrón común: `requirements.in` con rangos sueltos +
+`requirements.txt` generado vía `pip-compile` (de pip-tools).
+
+### Poetry: gestión moderna
+
+Poetry maneja dependencias + virtualenv + packaging con un comando:
+
+```bash
+# Inicializar proyecto
+poetry init
+
+# Agregar paquete (instala + actualiza pyproject.toml + lock)
+poetry add pandas
+poetry add --group dev pytest
+
+# Instalar lo declarado
+poetry install
+
+# Activar shell del entorno
+poetry shell
+```
+
+`pyproject.toml` reemplaza `setup.py` y `requirements.txt`:
+
+```toml
+[tool.poetry]
+name = "my-pipeline"
+version = "0.1.0"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pandas = "^2.1"
+requests = "^2.31"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4"
+```
+
+`poetry.lock` (auto-generado, se commitea) congela versiones exactas
+para todos. El `^2.1` significa "compatible con 2.1, ≤3.0".
+
+### uv: el nuevo rápido
+
+[`uv`](https://github.com/astral-sh/uv) es un instalador 10-100× más
+rápido que pip, escrito en Rust:
+
+```bash
+uv venv                       # crea .venv
+uv pip install pandas         # instala
+uv pip compile requirements.in -o requirements.txt
+```
+
+Cada vez más adoptado en CI por velocidad.
+
+### conda y mamba
+
+Para data science con dependencias nativas pesadas (NumPy con MKL,
+GeoPandas con GDAL), conda maneja cosas que pip no puede (binarios C++).
+Mamba es conda con un solver más rápido.
+
+```bash
+mamba create -n my-pipeline python=3.11 pandas pyarrow -c conda-forge
+mamba activate my-pipeline
+```
+
+En Data Engineering puro: pip + Poetry/uv suelen bastar. Conda gana
+cuando trabajas con ciencia/ML pesada.
+
+### .python-version: fijar versión de Python
+
+<AnnotatedCode
+  language="bash"
+  filename="terminal"
+  annotations={[
+    {
+      match: 'pyenv install',
+      title: 'Instala una versión',
+      body: 'pyenv mantiene varias versiones de Python instaladas en paralelo. Útil cuando tu prod corre 3.10 pero quieres probar 3.12.',
+    },
+    {
+      match: 'pyenv local',
+      title: 'Fija la versión por proyecto',
+      body: 'Crea un archivo .python-version en el directorio. Cuando entras a la carpeta, pyenv usa esa versión automáticamente.',
+    },
+    {
+      match: '.python-version',
+      title: 'Versión por proyecto',
+      body: 'Como .nvmrc en Node. Lo commiteas para que tu equipo use la misma versión.',
+    },
+  ]}
+>
+{`# Ver versiones disponibles
+pyenv install --list
+
+# Instalar
+pyenv install 3.11.7
+
+# Fijar para este proyecto
+pyenv local 3.11.7
+
+# Crea .python-version automáticamente:
+cat .python-version
+# 3.11.7`}
+</AnnotatedCode>
+
+### Estructura típica de un pipeline
+
+```
+my-pipeline/
+├── .venv/               (gitignored)
+├── .python-version      (3.11.7)
+├── pyproject.toml       (deps + metadata)
+├── poetry.lock          (versions exactas)
+├── README.md
+├── src/
+│   └── pipeline/
+│       ├── __init__.py
+│       ├── extract.py
+│       ├── transform.py
+│       └── load.py
+├── tests/
+│   └── test_transform.py
+└── .env.example         (template, sin secretos)
+```
+
+### Errores comunes
+
+- **Instalar paquetes globalmente**. Saturan tu sistema, chocan entre
+  proyectos.
+- **Versionar `.venv/`**. Pesa MB, contiene paths absolutos, no es
+  portable.
+- **No fijar versión de Python**. Tu colega usa 3.9, tú 3.12, algo
+  rompe sin que sepan por qué.
+- **`pip install` sin `requirements.txt` o lock**. Dos máquinas, dos
+  estados distintos.
+- **Mezclar pip y conda**. Romper depencies en formas creativas.
+  Decide uno y stick to it.
+
+### Para seguir aprendiendo
+
+- [Real Python — venv vs pyenv vs Poetry](https://realpython.com/python-virtual-environments-a-primer/)
+- [Poetry docs](https://python-poetry.org/docs/)
+- [uv](https://github.com/astral-sh/uv)
+- [Hatch](https://hatch.pypa.io/) — alternativa moderna a Poetry
+
+---
+
+## Quiz
+
+<Quiz
+  id="python-venv-quiz"
+  xpReward={60}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Por qué necesitas virtualenvs?',
+      options: [
+        'Para que Python sea más rápido',
+        'Para aislar dependencias entre proyectos y evitar conflictos de versiones',
+        'Para encriptar el código',
+        'Es opcional',
+      ],
+      correctIndex: 1,
+      explanation: 'Aislamiento por proyecto. Sin virtualenv, todo es global y choca.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Debes versionar la carpeta `.venv/` en Git.',
+      correct: false,
+      explanation: 'NUNCA. Pesa MB y es específica de cada máquina. Versiona el lock.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: '¿Qué reemplaza Poetry?',
+      options: [
+        'Solo virtualenv',
+        'virtualenv + pip + setup.py: lo unifica con pyproject.toml + lock',
+        'Solo pip',
+        'Python mismo',
+      ],
+      correctIndex: 1,
+      explanation: 'Manejo integral: deps, venv, packaging.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Comando para crear venv built-in.',
+      template: 'python -m ___ .venv',
+      answer: 'venv',
+      caseSensitive: false,
+      explanation: 'python -m venv .venv crea el entorno.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: '¿Para qué sirve el archivo `poetry.lock`?',
+      options: [
+        'Bloquear el proyecto',
+        'Fijar versiones EXACTAS de cada dependencia para reproducibilidad entre máquinas',
+        'Configurar CI',
+        'Encriptar credenciales',
+      ],
+      correctIndex: 1,
+      explanation: 'Asegura que todos instalan las mismas versiones que tú.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="python-venv-exercise"
+  title="Parser de requirements.txt"
+  description="Implementa `parseRequirements(text)` que parse un requirements.txt simple y devuelva un objeto { paquete: version }. Líneas que empiezan con # son comentarios."
+  language="javascript"
+  starterCode={`function parseRequirements(text) {
+  return {};
+}
+
+const text = \`# data
+pandas==2.1.3
+numpy==1.26.0
+# http
+requests==2.31.0\`;
+console.log(parseRequirements(text));`}
+  solution={`function parseRequirements(text) {
+  const out = {};
+  for (const line of text.split('\\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const m = trimmed.match(/^([a-zA-Z0-9_-]+)==(.+)$/);
+    if (m) out[m[1]] = m[2];
+  }
+  return out;
+}
+const text = \`# data
+pandas==2.1.3
+numpy==1.26.0
+# http
+requests==2.31.0\`;
+console.log(parseRequirements(text));`}
+  hints={[
+    'Split por newline.',
+    'Skip lineas vacías y comentarios.',
+    'Regex para "name==version".',
+  ]}
+  tests={[
+    {
+      description: 'parsea pin simple',
+      assert: 'parseRequirements("pandas==2.1.3").pandas === "2.1.3"',
+    },
+    {
+      description: 'ignora comentarios',
+      assert: 'Object.keys(parseRequirements("# c\\npandas==1.0")).length === 1',
+    },
+    {
+      description: 'ignora líneas vacías',
+      assert: 'Object.keys(parseRequirements("\\npandas==1.0\\n\\n")).length === 1',
+    },
+  ]}
+/>
+
+---
+
+## Mini-proyecto del módulo
+
+<Project
+  id="python-module-project"
+  title="Pipeline ETL en Python"
+  description="Construye un pipeline mini que extrae datos de una API pública, los limpia con Pandas, y los carga a SQLite."
+  xpReward={400}
+  steps={[
+    {
+      id: 's1',
+      title: 'Setup del proyecto',
+      description: 'Crea repo con virtualenv (venv o Poetry), pyproject.toml o requirements.txt, .gitignore Python, README.',
+      successCriteria: 'pip install -r requirements.txt funciona en máquina limpia.',
+    },
+    {
+      id: 's2',
+      title: 'Extract — API pública',
+      description: 'Elige una API (PokeAPI, OpenWeather, NASA). Usa requests con timeout, retries y paginación si aplica.',
+      successCriteria: 'Función extract(...) devuelve lista de dicts.',
+    },
+    {
+      id: 's3',
+      title: 'Transform — Pandas',
+      description: 'Carga a DataFrame, renombra columnas, castea tipos, calcula al menos 1 columna derivada, maneja nulls.',
+      successCriteria: 'Función transform(df) devuelve DataFrame limpio con tipos correctos.',
+    },
+    {
+      id: 's4',
+      title: 'Load — SQLite via SQLAlchemy',
+      description: 'Crea engine, escribe DataFrame a tabla con if_exists=\'append\' y chunksize.',
+      successCriteria: 'SELECT count(*) en SQLite muestra las filas cargadas.',
+    },
+    {
+      id: 's5',
+      title: 'Tests con pytest',
+      description: 'Tests unitarios de transform (3+ casos), 1 test de integración con BD SQLite temporal.',
+      successCriteria: 'pytest pasa con ≥80% de cobertura del código de transformación.',
+    },
+    {
+      id: 's6',
+      title: 'CLI + scheduling local',
+      description: 'Wrap el pipeline en una función main() invocable desde CLI. Bonus: schedule con cron.',
+      successCriteria: 'python -m my_pipeline corre el pipeline E2E sin errores.',
+    },
+  ]}
+/>
+
+---
+
+¡Felicidades, completaste el Módulo 2! Próximo: **Modelado de datos**.

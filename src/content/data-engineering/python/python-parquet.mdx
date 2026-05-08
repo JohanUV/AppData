@@ -1,0 +1,277 @@
+## Parquet y formatos columnares
+
+CSV es el formato que todo el mundo entiende. También es el peor para
+analítica: lento de leer, pesado en disco, sin tipos. **Parquet** es lo
+que usa la industria para datasets analíticos. Si haces un pipeline que
+lee/escribe en S3, GCS o un data lake, vas a usar Parquet.
+
+### Row-oriented vs columnar
+
+CSV es **row-oriented**: cada línea es una fila, todos los campos
+juntos.
+
+```
+user_id,country,amount
+1,CO,100
+2,MX,50
+3,CO,200
+```
+
+Para una query "suma de amount" tienes que leer **todo el archivo** —
+incluyendo country aunque no lo uses.
+
+Parquet es **columnar**: las columnas se almacenan separadas y
+comprimidas independientemente.
+
+```
+[user_id: 1, 2, 3]
+[country: CO, MX, CO]
+[amount: 100, 50, 200]
+```
+
+Para "suma de amount" lees solo esa columna. Resultado: 5-50× menos I/O.
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[CSV<br/>row-oriented] -->|leer toda la fila| B[Procesar columna]
+  C[Parquet<br/>columnar] -->|leer solo amount| D[Procesar columna]`}
+</Diagram>
+
+### Lectura y escritura
+
+```python
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+# Pandas (más fácil)
+df = pd.read_parquet('payments.parquet')
+df.to_parquet('out.parquet', compression='snappy')
+
+# PyArrow (más control)
+table = pq.read_table('payments.parquet', columns=['user_id', 'amount'])
+df = table.to_pandas()
+```
+
+`columns=` en PyArrow lee SOLO esas columnas — escala a archivos de
+GB sin cargar todo.
+
+### Tipos preservados
+
+Parquet guarda el schema con los datos. CSV no — todo es string hasta
+que tu lector adivina:
+
+```python
+df_csv = pd.read_csv('data.csv')
+df_csv['user_id'].dtype          # object (string!) si tiene leading zeros
+df_csv['date'].dtype             # object — no parseo automático
+
+df_pq = pd.read_parquet('data.parquet')
+df_pq['user_id'].dtype           # int64 — el tipo correcto
+df_pq['date'].dtype              # datetime64[ns]
+```
+
+Esto **previene bugs** silenciosos en pipelines.
+
+### Compresión
+
+```python
+df.to_parquet('out.parquet', compression='snappy')   # rápido, default
+df.to_parquet('out.parquet', compression='gzip')     # más pequeño, lento
+df.to_parquet('out.parquet', compression='zstd')     # equilibrio moderno
+```
+
+Snappy es la default — buena para hot data. Zstd da mejor compresión
+con CPU similar; cada vez más usado.
+
+### Particionamiento
+
+<AnnotatedCode
+  language="python"
+  filename="partitioning.py"
+  annotations={[
+    {
+      match: 'partition_cols',
+      title: 'Particionar por columna',
+      body: 'Crea subdirectorios por valor de la columna. Lo escribe como dataset/year=2026/month=05/file.parquet.',
+    },
+    {
+      match: 'pq.read_table',
+      title: 'Filtros pushdown',
+      body: 'PyArrow lee solo las particiones que cumplen el filtro. Si pides year=2026, no lee otros años — gran ahorro de I/O.',
+    },
+    {
+      match: 'filters',
+      title: 'Sintaxis de filtros',
+      body: 'Lista de tuplas (column, op, value). Como una versión simplificada de WHERE. Postgres-like: =, in, >, <.',
+    },
+  ]}
+>
+{`# Escribir particionado
+df.to_parquet(
+    'lake/payments/',
+    partition_cols=['year', 'month'],
+)
+
+# Estructura resultante:
+# lake/payments/year=2026/month=01/part-0.parquet
+# lake/payments/year=2026/month=02/part-0.parquet
+
+# Leer solo lo que importa
+table = pq.read_table(
+    'lake/payments/',
+    filters=[('year', '=', 2026), ('month', 'in', [1, 2, 3])],
+)`}
+</AnnotatedCode>
+
+Particionar bien depende del patrón de query. Regla: particiona por la
+columna que más usas en `WHERE`. Para datos de eventos: por fecha
+(`date` o `year/month/day`).
+
+### Otros formatos columnares
+
+- **ORC**: similar a Parquet, optimizado para Hive. Verás en stacks
+  Hadoop legacy.
+- **Avro**: row-oriented pero con schema. Bueno para mensajes Kafka,
+  malo para analytics.
+- **Iceberg / Delta / Hudi**: "table formats" sobre Parquet. Te dan
+  ACID, time travel, schema evolution.
+
+Para Data Engineering moderno: Parquet por default; Iceberg/Delta para
+lakehouse.
+
+### Limites de Parquet
+
+- **No para mutaciones**: append es OK, update/delete no es trivial
+  (eso es lo que aporta Iceberg/Delta).
+- **No streaming pequeño**: archivos diminutos crean overhead
+  (problema clásico "small files"). Idealmente cada Parquet = 100MB-1GB.
+- **No editable a mano**: binario.
+
+### Errores comunes
+
+- **Generar millones de archivos pequeños** (1KB cada uno) en S3.
+  Compactar regularmente. Reglas: archivos `<=` 128MB son small.
+- **No usar `columns=`** para columns selection: cargas data inútil.
+- **Particionar por columnas con altísima cardinalidad** (timestamp
+  exacto, user_id). Genera explosión de directorios. Prefiere truncar
+  a día.
+- **CSV cuando podrías Parquet**: 5× más espacio, 10× más lento, sin
+  tipos. Salvo para handoff con humanos, evítalo.
+
+### Para seguir aprendiendo
+
+- [Parquet docs](https://parquet.apache.org/)
+- [PyArrow docs](https://arrow.apache.org/docs/python/parquet.html)
+- [Apache Iceberg](https://iceberg.apache.org/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="python-parquet-quiz"
+  xpReward={60}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Por qué Parquet es más rápido que CSV para analytics?',
+      options: [
+        'Es más nuevo',
+        'Almacenamiento columnar — lees solo las columnas que necesitas',
+        'Usa GPU',
+        'No es más rápido',
+      ],
+      correctIndex: 1,
+      explanation: 'Columnar + compresión + tipos preservados.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Parquet preserva los tipos de las columnas con el archivo.',
+      correct: true,
+      explanation: 'Schema embebido. CSV no.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: '¿Por qué particionar por timestamp exacto es mala idea?',
+      options: [
+        'No funciona en Parquet',
+        'Genera explosión de directorios — un archivo por timestamp único',
+        'Es más lento',
+        'Requiere licencia',
+      ],
+      correctIndex: 1,
+      explanation: 'Trunca a día/hora; nunca timestamp exacto.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Lee solo dos columnas de un Parquet.',
+      template: 'pq.read_table("file.parquet", ___=["a","b"])',
+      answer: 'columns',
+      caseSensitive: false,
+      explanation: 'columns= activa column pruning.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: '¿Qué pasa con archivos Parquet de 1KB cada uno en S3?',
+      options: [
+        'Funciona perfecto',
+        'Problema "small files": metadata overhead, listing lento — compactar',
+        'S3 los rechaza',
+        'Mejor que archivos grandes',
+      ],
+      correctIndex: 1,
+      explanation: 'Sweet spot ~100MB-1GB por archivo.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="python-parquet-exercise"
+  title="Particionado por fecha"
+  description="Implementa `partitionPath(date, base)` que dado una fecha 'YYYY-MM-DD' y un base path, devuelva el path estilo Hive: base + '/year=YYYY/month=MM/day=DD'."
+  language="javascript"
+  starterCode={`function partitionPath(date, base) {
+  return '';
+}
+
+console.log(partitionPath('2026-05-15', 'lake/events'));
+// 'lake/events/year=2026/month=05/day=15'`}
+  solution={`function partitionPath(date, base) {
+  const [y, m, d] = date.split('-');
+  return \`\${base}/year=\${y}/month=\${m}/day=\${d}\`;
+}
+console.log(partitionPath('2026-05-15', 'lake/events'));`}
+  hints={[
+    'Split por "-".',
+    'Template literal con interpolación.',
+  ]}
+  tests={[
+    {
+      description: 'genera path correcto',
+      assert: 'partitionPath("2026-05-15","l") === "l/year=2026/month=05/day=15"',
+    },
+    {
+      description: 'preserva ceros',
+      assert: 'partitionPath("2026-01-05","l") === "l/year=2026/month=01/day=05"',
+    },
+    {
+      description: 'base con slash',
+      assert: 'partitionPath("2026-12-31","x/y") === "x/y/year=2026/month=12/day=31"',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **testing de pipelines con pytest**.

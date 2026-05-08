@@ -1,0 +1,289 @@
+## Consumo de APIs con requests
+
+Buena parte de los datos en producción no vienen de archivos: vienen
+de **APIs**. Stripe, Salesforce, Shopify, Slack — todos exponen REST
+endpoints que tu pipeline tiene que consultar regularmente. La librería
+estándar de facto en Python para esto es **requests**.
+
+### Una llamada GET básica
+
+```python
+import requests
+
+resp = requests.get('https://api.github.com/users/octocat')
+resp.raise_for_status()         # error si status >= 400
+data = resp.json()
+print(data['name'], data['public_repos'])
+```
+
+`raise_for_status()` es **importante**: por defecto requests no falla
+con HTTP 4xx/5xx, te devuelve el response. Si no chequeas, asumes que
+todo bien y procesas data inválida.
+
+### Headers y query params
+
+```python
+resp = requests.get(
+    'https://api.example.com/v1/orders',
+    headers={'Authorization': 'Bearer ' + token},
+    params={'status': 'paid', 'limit': 100},
+    timeout=30,                  # ¡siempre!
+)
+```
+
+**Siempre** pon `timeout`. Sin él, una API lenta puede colgar tu
+pipeline indefinidamente.
+
+### POST con JSON
+
+```python
+resp = requests.post(
+    'https://api.example.com/v1/webhooks',
+    json={'url': 'https://my.site', 'event': 'order.created'},
+    headers={'Authorization': 'Bearer ' + token},
+    timeout=30,
+)
+```
+
+Pasar `json=` (no `data=`) auto-serializa y agrega el header
+`Content-Type: application/json`.
+
+### Paginación
+
+Casi toda API real pagina. Patrones comunes:
+
+```python
+# Estilo offset/limit
+all_items = []
+offset = 0
+while True:
+    resp = requests.get(url, params={'offset': offset, 'limit': 100}, timeout=30)
+    resp.raise_for_status()
+    page = resp.json()['items']
+    if not page:
+        break
+    all_items.extend(page)
+    offset += 100
+
+# Estilo cursor (mejor)
+cursor = None
+while True:
+    params = {'limit': 100}
+    if cursor:
+        params['cursor'] = cursor
+    resp = requests.get(url, params=params, timeout=30).json()
+    all_items.extend(resp['items'])
+    cursor = resp.get('next_cursor')
+    if not cursor:
+        break
+```
+
+Cursor pagination escala mejor — no salta filas si el dataset cambia
+durante la iteración.
+
+### Retries con backoff
+
+Las APIs fallan: timeouts, 502s temporales, rate limits. La forma
+profesional:
+
+<AnnotatedCode
+  language="python"
+  filename="retries.py"
+  annotations={[
+    {
+      match: 'HTTPAdapter',
+      title: 'Adaptador con retries',
+      body: 'Inyecta una estrategia de retry en la sesión. Aplica a todas las llamadas que hagas con esa sesión.',
+    },
+    {
+      match: 'total=5',
+      title: 'Hasta 5 intentos',
+      body: 'Reintentar 5 veces. Sumando los backoffs, da unos ~30 segundos de margen total — suficiente para flapeos típicos.',
+    },
+    {
+      match: 'backoff_factor=1',
+      title: 'Espera exponencial',
+      body: 'Esperas 0, 1, 2, 4, 8 segundos entre intentos. Evita saturar la API y respeta rate limits.',
+    },
+    {
+      match: 'status_forcelist=[429, 500, 502, 503, 504]',
+      title: 'Qué status reintentar',
+      body: '429 = rate limit; 5xx = server error. NO reintentes 4xx (son tus bugs, no se arreglan reintentando).',
+    },
+  ]}
+>
+{`from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+session = requests.Session()
+retry = Retry(
+    total=5,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=['GET', 'POST'],
+)
+session.mount('https://', HTTPAdapter(max_retries=retry))
+
+resp = session.get('https://api.example.com/orders', timeout=30)`}
+</AnnotatedCode>
+
+### Rate limiting cliente-side
+
+Algunas APIs son estrictas (60 req/min). Mejor no llegar al 429:
+
+```python
+import time
+
+def rate_limited_get(urls, calls_per_second=2):
+    interval = 1.0 / calls_per_second
+    last = 0
+    for url in urls:
+        wait = interval - (time.time() - last)
+        if wait > 0:
+            time.sleep(wait)
+        yield requests.get(url, timeout=30).json()
+        last = time.time()
+```
+
+### Async para paralelismo
+
+`requests` es síncrono. Para hacer 100 calls en paralelo usa `aiohttp`
+o `httpx` con asyncio:
+
+```python
+import httpx, asyncio
+
+async def fetch(client, url):
+    r = await client.get(url, timeout=30)
+    return r.json()
+
+async def main(urls):
+    async with httpx.AsyncClient() as client:
+        return await asyncio.gather(*[fetch(client, u) for u in urls])
+
+results = asyncio.run(main(urls))
+```
+
+10× más rápido para 100 endpoints lentos.
+
+### Errores comunes
+
+- **No poner `timeout=`**. Tu pipeline se cuelga indefinidamente.
+- **No chequear `raise_for_status()`** y procesar respuestas con error.
+- **Reintentar 4xx**. Son errores tuyos, no del servidor; reintento
+  inútil y a veces destructivo.
+- **No pagar tokens fuera del repo**: ya lo viste en Git, repítalo
+  aquí: tokens en `.env`, jamás hardcodeados.
+- **No respetar rate limits**: te bloquean la API key.
+- **Cargar el JSON entero en memoria** cuando es enorme: usa
+  `stream=True` y procesa por chunks.
+
+### Para seguir aprendiendo
+
+- [requests docs](https://requests.readthedocs.io/)
+- [httpx](https://www.python-httpx.org/) — alternativa moderna con
+  soporte async
+- [tenacity](https://tenacity.readthedocs.io/) — retries más expresivos
+  que urllib3
+
+---
+
+## Quiz
+
+<Quiz
+  id="python-apis-quiz"
+  xpReward={60}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'requests recibe HTTP 500. Sin `raise_for_status()`, ¿qué pasa?',
+      options: [
+        'Lanza excepción automáticamente',
+        'Devuelve la response normal; tienes que chequear status_code manualmente',
+        'Reintenta',
+        'Devuelve None',
+      ],
+      correctIndex: 1,
+      explanation: 'requests no lanza por default. raise_for_status convierte 4xx/5xx en excepción.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '¿Qué status NO deberías reintentar automáticamente?',
+      options: ['429', '500', '502', '404'],
+      correctIndex: 3,
+      explanation: '4xx son errores del cliente (no se arreglan reintentando). 5xx y 429 sí.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Cursor pagination es más robusto que offset/limit cuando el dataset cambia mientras paginas.',
+      correct: true,
+      explanation: 'Offset puede saltar/duplicar filas si insertan/borran durante la iteración.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Argumento crítico para evitar que requests cuelgue.',
+      template: 'requests.get(url, ___=30)',
+      answer: 'timeout',
+      caseSensitive: false,
+      explanation: 'timeout=N segundos. Siempre.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: '100 calls a una API lenta — qué herramienta?',
+      options: [
+        'requests síncrono en for loop',
+        'httpx/aiohttp async con asyncio.gather',
+        'subprocess con curl',
+        'Pandas',
+      ],
+      correctIndex: 1,
+      explanation: 'Async permite IO concurrente con un solo thread.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="python-apis-exercise"
+  title="Backoff exponencial"
+  description="Implementa `computeBackoff(attempt, base)` que devuelva el delay (segundos) para el intento N: base * 2^(attempt-1). attempt 1 → base; attempt 2 → 2*base; attempt 3 → 4*base."
+  language="javascript"
+  starterCode={`function computeBackoff(attempt, base) {
+  return 0;
+}
+
+console.log(computeBackoff(1, 1)); // 1
+console.log(computeBackoff(2, 1)); // 2
+console.log(computeBackoff(3, 1)); // 4
+console.log(computeBackoff(4, 0.5)); // 4`}
+  solution={`function computeBackoff(attempt, base) {
+  if (attempt < 1) return 0;
+  return base * Math.pow(2, attempt - 1);
+}
+console.log(computeBackoff(1, 1));
+console.log(computeBackoff(2, 1));
+console.log(computeBackoff(3, 1));
+console.log(computeBackoff(4, 0.5));`}
+  hints={[
+    'Math.pow(2, attempt-1) o 2**(attempt-1).',
+    'attempt 1 da 2^0 = 1.',
+  ]}
+  tests={[
+    { description: 'attempt 1 = base', assert: 'computeBackoff(1, 1) === 1' },
+    { description: 'attempt 3 = 4*base', assert: 'computeBackoff(3, 1) === 4' },
+    { description: 'base 0.5 escala', assert: 'computeBackoff(4, 0.5) === 4' },
+  ]}
+/>
+
+---
+
+Próxima lección: **SQLAlchemy** para conexiones a bases de datos.

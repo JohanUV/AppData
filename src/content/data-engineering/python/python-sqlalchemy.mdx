@@ -1,0 +1,302 @@
+## SQLAlchemy y conexión a BDs
+
+**SQLAlchemy** es la librería de Python para conectarse a cualquier
+base de datos relacional. Soporta Postgres, MySQL, SQLite, SQL Server,
+Oracle, BigQuery, Snowflake — todo con la misma API. Para Data
+Engineering, suele ser la capa de transporte entre tu pipeline y los
+warehouses.
+
+### Engine y connection
+
+```python
+from sqlalchemy import create_engine, text
+
+engine = create_engine(
+    'postgresql+psycopg2://user:pass@host:5432/db',
+    pool_size=5,
+    pool_pre_ping=True,
+)
+
+with engine.connect() as conn:
+    result = conn.execute(text('SELECT 1'))
+    print(result.scalar())
+```
+
+Cada motor tiene su URL: `postgresql://`, `mysql://`, `sqlite:///`,
+`bigquery://project`, etc. La parte `+driver` indica qué driver Python
+usar (psycopg2 para Postgres, mysqlconnector para MySQL).
+
+`pool_pre_ping=True` chequea conexiones antes de usarlas — evita
+errores "MySQL server has gone away" en pipelines que viven horas.
+
+### Lectura: usa Pandas
+
+```python
+import pandas as pd
+
+df = pd.read_sql(
+    'SELECT * FROM payments WHERE created_at >= %(since)s',
+    engine,
+    params={'since': '2026-01-01'},
+)
+```
+
+`pd.read_sql` con engine de SQLAlchemy es la forma idiomática de cargar
+queries a DataFrames. **Siempre usa parámetros**, nunca `f-strings` con
+input externo: SQL injection.
+
+### Escritura: insert / upsert
+
+```python
+df.to_sql(
+    'payments_staging',
+    engine,
+    if_exists='append',     # 'fail', 'replace', 'append'
+    index=False,
+    chunksize=10_000,
+    method='multi',         # acelera muchísimo en Postgres
+)
+```
+
+<Callout type="warning" title="`if_exists='replace'` borra la tabla">
+  No solo trunca, dropea. Pierdes índices, constraints, permisos. Es
+  para staging temporal, no para producción.
+</Callout>
+
+Para upsert (INSERT ... ON CONFLICT), SQLAlchemy 2.0 te da:
+
+```python
+from sqlalchemy.dialects.postgresql import insert
+
+stmt = insert(payments_table).values(rows)
+stmt = stmt.on_conflict_do_update(
+    index_elements=['id'],
+    set_={'amount': stmt.excluded.amount},
+)
+with engine.begin() as conn:
+    conn.execute(stmt)
+```
+
+### Transacciones
+
+```python
+with engine.begin() as conn:    # auto-commit on success, rollback on error
+    conn.execute(text('UPDATE accounts SET balance = balance - 100 WHERE id = 1'))
+    conn.execute(text('UPDATE accounts SET balance = balance + 100 WHERE id = 2'))
+# si una falla, las dos hacen rollback
+```
+
+`engine.begin()` te da una transacción explícita. `engine.connect()` no:
+debes commitear manualmente.
+
+### Connection pooling
+
+<AnnotatedCode
+  language="python"
+  filename="pooling.py"
+  annotations={[
+    {
+      match: 'pool_size=5',
+      title: 'Conexiones simultáneas',
+      body: 'Cuántas conexiones mantener abiertas. Para una API que sirve 100 req/s, 5-10 suele bastar; para batch jobs, 1-2.',
+    },
+    {
+      match: 'max_overflow=10',
+      title: 'Burst capacity',
+      body: 'Conexiones extra temporales cuando el pool está lleno. Evita errores de "pool exhausted" en picos.',
+    },
+    {
+      match: 'pool_recycle=3600',
+      title: 'Reciclar conexiones',
+      body: 'Cierra y reabre conexiones cada N segundos. Importante porque algunos balanceadores cierran conexiones inactivas (Postgres default = 0 = nunca).',
+    },
+    {
+      match: 'pool_pre_ping=True',
+      title: 'Chequeo before-use',
+      body: 'Antes de devolverte una conexión, hace SELECT 1 para verificar que sigue viva. Costo: una RTT por checkout. Beneficio: pipelines no se rompen por conexiones zombie.',
+    },
+  ]}
+>
+{`engine = create_engine(
+    'postgresql://user:pass@host/db',
+    pool_size=5,
+    max_overflow=10,
+    pool_recycle=3600,
+    pool_pre_ping=True,
+)`}
+</AnnotatedCode>
+
+### El Core API vs el ORM
+
+SQLAlchemy tiene dos niveles:
+
+- **Core**: SQL imperativo con builder Python. Lo que vimos arriba.
+- **ORM**: clases que mapean tablas. `User.query.filter_by(...)`.
+
+Para Data Engineering, el **Core** es lo correcto. ORMs brillan en
+aplicaciones web; en pipelines son innecesario overhead. Si quieres
+type-safety y abstracción, considera **dbt** (lección de ETL) en lugar
+del ORM de SQLAlchemy.
+
+### Patrón típico en un pipeline
+
+```python
+def extract(engine):
+    return pd.read_sql(
+        '''SELECT * FROM payments
+           WHERE created_at >= :since AND created_at < :until''',
+        engine,
+        params={'since': start, 'until': end},
+    )
+
+def transform(df):
+    df['amount_eur'] = df['amount'] * 0.92
+    return df
+
+def load(df, engine):
+    df.to_sql('payments_clean', engine, if_exists='append',
+              index=False, chunksize=10_000, method='multi')
+```
+
+### Errores comunes
+
+- **f-string con input externo**: SQL injection. Siempre `text(':name')`
+  + params dict.
+- **No cerrar conexiones**: `engine.connect()` SIN `with` te deja
+  conexiones abiertas hasta agotar el pool.
+- **`if_exists='replace'`** en producción: dropea la tabla.
+- **`pool_size` enorme** "por las dudas": cada conexión consume RAM en
+  el motor. Postgres con 1000 conexiones se cae.
+- **Sin retries**: la conexión a la BD se cae 1-2 veces al día. Tus
+  pipelines tienen que ser resilientes.
+
+### Para seguir aprendiendo
+
+- [SQLAlchemy 2.0 docs](https://docs.sqlalchemy.org/en/20/)
+- [psycopg3](https://www.psycopg.org/psycopg3/) — driver Postgres
+  moderno, soporta async.
+
+---
+
+## Quiz
+
+<Quiz
+  id="python-sqlalchemy-quiz"
+  xpReward={60}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Diferencia clave entre `engine.connect()` y `engine.begin()`?',
+      options: [
+        'No hay diferencia',
+        'begin abre transacción auto-commit/rollback; connect requiere commit manual',
+        'connect es deprecado',
+        'begin no funciona con Postgres',
+      ],
+      correctIndex: 1,
+      explanation: 'begin() es transaccional; connect() no auto-commitea.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '¿Por qué usar params dict en lugar de f-string en queries?',
+      options: [
+        'Es más rápido',
+        'Evita SQL injection y tipos correctos',
+        'No es necesario',
+        'Sólo en MySQL',
+      ],
+      correctIndex: 1,
+      explanation: 'f-string + input externo = SQL injection garantizado.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: '`pool_pre_ping=True` agrega un SELECT 1 cada checkout para verificar conexión viva.',
+      correct: true,
+      explanation: 'Pequeño costo, gran robustez en pipelines de larga vida.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Cargar query a DataFrame.',
+      template: 'pd.___(query, engine, params=...)',
+      answer: 'read_sql',
+      caseSensitive: false,
+      explanation: 'pd.read_sql + engine = forma idiomática.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Cuándo NO usar el ORM de SQLAlchemy en pipelines?',
+      options: [
+        'Nunca',
+        'Casi siempre — Core es más directo para Data Engineering',
+        'Sólo con MySQL',
+        'Sólo en async',
+      ],
+      correctIndex: 1,
+      explanation: 'ORM brilla en apps web; en pipelines, Core es más natural.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="python-sqlalchemy-exercise"
+  title="Validador de URL de conexión"
+  description="Implementa `parseDbUrl(url)` que dado un string `dialect+driver://user:pass@host:port/db`, devuelva un objeto con esos componentes. driver y port son opcionales."
+  language="javascript"
+  starterCode={`function parseDbUrl(url) {
+  return null;
+}
+
+console.log(parseDbUrl('postgresql+psycopg2://u:p@h:5432/db'));
+console.log(parseDbUrl('mysql://u:p@h/db'));`}
+  solution={`function parseDbUrl(url) {
+  const m = url.match(/^([a-z]+)(?:\\+([a-z0-9]+))?:\\/\\/([^:]+):([^@]+)@([^:/]+)(?::(\\d+))?\\/(.+)$/);
+  if (!m) return null;
+  return {
+    dialect: m[1],
+    driver: m[2] || null,
+    user: m[3],
+    password: m[4],
+    host: m[5],
+    port: m[6] ? Number(m[6]) : null,
+    database: m[7],
+  };
+}
+console.log(parseDbUrl('postgresql+psycopg2://u:p@h:5432/db'));
+console.log(parseDbUrl('mysql://u:p@h/db'));`}
+  hints={[
+    'Regex con grupos opcionales para driver y port.',
+    'Dialect siempre presente; driver con +.',
+  ]}
+  tests={[
+    {
+      description: 'parsea con driver y port',
+      assert: 'parseDbUrl("postgresql+psycopg2://u:p@h:5432/db").dialect === "postgresql"',
+    },
+    {
+      description: 'driver presente',
+      assert: 'parseDbUrl("postgresql+psycopg2://u:p@h:5432/db").driver === "psycopg2"',
+    },
+    {
+      description: 'sin driver ni port',
+      assert: 'parseDbUrl("mysql://u:p@h/db").port === null',
+    },
+    {
+      description: 'inválido',
+      assert: 'parseDbUrl("not-a-url") === null',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **Parquet** y formatos columnares.

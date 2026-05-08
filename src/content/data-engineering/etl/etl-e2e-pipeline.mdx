@@ -1,0 +1,420 @@
+## Caso práctico: pipeline E2E
+
+Vamos a juntar todo: extracción de una API → carga a warehouse →
+transformación con dbt → orquestación con Airflow → tests +
+monitoreo. El stack representativo de la modern data stack en 2026.
+
+### El escenario
+
+Pipeline de revenue diario para un e-commerce:
+
+1. Cada día a las 3am, extraer órdenes nuevas de la API de Shopify.
+2. Cargar a `raw.orders` en Snowflake (o BigQuery / Redshift).
+3. Correr dbt para transformar a `marts.fct_revenue_daily`.
+4. Validar con `dbt test`.
+5. Notificar al equipo (success o failure) por Slack.
+
+### El stack
+
+<Diagram type="mermaid">
+{`flowchart LR
+  S[Shopify API] -->|extract Python| L[(Snowflake<br/>raw.orders)]
+  L -->|dbt run| M[(Snowflake<br/>marts.fct_revenue_daily)]
+  M -->|dbt test| T[validations]
+  N[Airflow scheduler] -.orchestrates.-> S
+  N -.orchestrates.-> L
+  N -.orchestrates.-> M
+  N -.orchestrates.-> T
+  T --> SL[Slack notification]`}
+</Diagram>
+
+### El DAG en Airflow
+
+```python
+# dags/revenue_pipeline.py
+from datetime import datetime, timedelta
+from airflow.decorators import dag, task
+from airflow.providers.slack.operators.slack_webhook import SlackWebhookOperator
+import requests
+import os
+
+SNOWFLAKE_CONN = 'snowflake_warehouse'
+SHOPIFY_API_KEY = os.environ['SHOPIFY_API_KEY']
+
+default_args = {
+    'owner': 'data',
+    'retries': 2,
+    'retry_delay': timedelta(minutes=10),
+    'email_on_failure': True,
+    'depends_on_past': False,
+}
+
+@dag(
+    dag_id='revenue_pipeline',
+    default_args=default_args,
+    schedule='0 3 * * *',
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+    tags=['revenue', 'production'],
+)
+def revenue_pipeline():
+
+    @task
+    def extract_shopify(**context):
+        date = context['ds']
+        all_orders = []
+        cursor = None
+        while True:
+            params = {'limit': 250, 'updated_at_min': date}
+            if cursor:
+                params['page_info'] = cursor
+            r = requests.get(
+                'https://shop.myshopify.com/admin/api/2024-01/orders.json',
+                headers={'X-Shopify-Access-Token': SHOPIFY_API_KEY},
+                params=params,
+                timeout=60,
+            )
+            r.raise_for_status()
+            data = r.json()
+            all_orders.extend(data['orders'])
+            cursor = data.get('next_cursor')
+            if not cursor:
+                break
+        # Persistir en S3 por separation of concerns
+        path = f's3://staging/orders/{date}.json'
+        upload_to_s3(all_orders, path)
+        return path
+
+    @task
+    def load_to_snowflake(s3_path):
+        from snowflake.connector import connect
+        conn = connect(...)
+        conn.cursor().execute(f"""
+            COPY INTO raw.orders
+            FROM '{s3_path}'
+            FILE_FORMAT = (TYPE = JSON)
+            ON_ERROR = ABORT_STATEMENT;
+        """)
+        return s3_path
+
+    @task
+    def dbt_build(_path):
+        import subprocess
+        result = subprocess.run(
+            ['dbt', 'build', '--select', '+fct_revenue_daily'],
+            capture_output=True, text=True, cwd='/opt/dbt',
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f'dbt failed: {result.stderr}')
+
+    notify_success = SlackWebhookOperator(
+        task_id='notify_success',
+        slack_webhook_conn_id='slack_data',
+        message='✅ Revenue pipeline OK for {{ ds }}',
+        trigger_rule='all_success',
+    )
+
+    notify_failure = SlackWebhookOperator(
+        task_id='notify_failure',
+        slack_webhook_conn_id='slack_data',
+        message='❌ Revenue pipeline FAILED for {{ ds }}',
+        trigger_rule='one_failed',
+    )
+
+    s3_path = extract_shopify()
+    loaded = load_to_snowflake(s3_path)
+    built = dbt_build(loaded)
+    built >> [notify_success, notify_failure]
+
+revenue_pipeline()
+```
+
+### El proyecto dbt
+
+```
+dbt_project.yml
+profiles.yml             # connection a Snowflake (gitignored)
+models/
+├── staging/
+│   └── stg_orders.sql
+└── marts/
+    └── fct_revenue_daily.sql
+```
+
+```sql
+-- models/staging/stg_orders.sql
+{{ config(materialized='view') }}
+
+SELECT
+    id::VARCHAR        AS order_id,
+    customer_id::VARCHAR AS customer_id,
+    status,
+    total_price::DECIMAL AS amount,
+    currency,
+    created_at::TIMESTAMP AS created_at
+FROM {{ source('shopify', 'orders') }}
+WHERE created_at >= '2026-01-01'
+```
+
+```sql
+-- models/marts/fct_revenue_daily.sql
+{{ config(
+    materialized='incremental',
+    unique_key='day',
+    on_schema_change='fail'
+) }}
+
+SELECT
+    DATE_TRUNC('day', created_at) AS day,
+    currency,
+    COUNT(*) AS n_orders,
+    SUM(amount) AS revenue,
+    AVG(amount) AS avg_ticket
+FROM {{ ref('stg_orders') }}
+WHERE status = 'paid'
+{% if is_incremental() %}
+  AND DATE_TRUNC('day', created_at) >= (SELECT DATE_TRUNC('day', MAX(day)) FROM {{ this }})
+{% endif %}
+GROUP BY 1, 2
+```
+
+```yaml
+# models/_schema.yml
+version: 2
+
+sources:
+  - name: shopify
+    database: raw
+    schema: shopify
+    tables:
+      - name: orders
+        loaded_at_field: created_at
+        freshness:
+          warn_after: {count: 24, period: hour}
+
+models:
+  - name: stg_orders
+    columns:
+      - name: order_id
+        tests: [unique, not_null]
+      - name: status
+        tests:
+          - accepted_values:
+              values: ['pending', 'paid', 'cancelled', 'refunded', 'failed']
+
+  - name: fct_revenue_daily
+    description: Revenue diario por moneda
+    columns:
+      - name: day
+        tests: [not_null]
+      - name: revenue
+        tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
+```
+
+### Monitoreo
+
+- **Airflow UI**: ver corridas, logs, fallos.
+- **dbt freshness**: `dbt source freshness` te dice si los datos
+  source están atrasados.
+- **Slack alerts**: del DAG.
+- **dbt artifacts** (run_results.json) → upload a observabilidad
+  (Elementary, Monte Carlo).
+
+### Patrones del pipeline
+
+- **Idempotencia**: `dbt build --select +fct_revenue_daily` con
+  incremental — re-correr el DAG no duplica.
+- **Separation of concerns**: extract en Python, load en Snowflake
+  COPY, transform en SQL/dbt.
+- **Failure isolation**: `dbt build` falla en el primer error y no
+  procesa downstream.
+- **Idempotencia + retries**: tareas pueden reintentarse seguras.
+- **Notificaciones explícitas**: success y failure (no solo
+  failure).
+
+### Errores comunes en E2E
+
+- **Hacer todo en Python**: pierdes la potencia del warehouse y dbt.
+- **Sin tests dbt**: la primera vez que el source cambia, los marts
+  generan basura silenciosamente.
+- **Sin alertas de freshness**: pipeline corre OK pero los datos
+  fuente están detenidos hace 3 días.
+- **Sin documentación dbt**: 3 meses después nadie entiende qué
+  hace `int_blah_summary`.
+- **Mezclar dev y prod en el mismo warehouse sin separar**: corres
+  un test y borras producción.
+
+### Para seguir aprendiendo
+
+- [The Modern Data Stack](https://www.moderndatastack.xyz/)
+- [Airbyte + dbt + Airflow tutorial](https://airbyte.com/tutorials)
+
+---
+
+## Quiz
+
+<Quiz
+  id="etl-e2e-quiz"
+  xpReward={80}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'En el pipeline E2E presentado, ¿quién hace la T (transform)?',
+      options: ['Python', 'dbt en SQL dentro del warehouse', 'Airflow', 'Slack'],
+      correctIndex: 1,
+      explanation: 'ELT moderno: extract Python, load COPY, transform dbt.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '¿Por qué `dbt build --select +fct_revenue_daily`?',
+      options: [
+        'Solo construye fct_revenue_daily, ignorando dependencias',
+        'Construye fct_revenue_daily y todos sus modelos upstream + tests',
+        'Solo corre tests',
+        'Borra la tabla',
+      ],
+      correctIndex: 1,
+      explanation: '+ delante = todos los upstreams. build = run + test.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'En el flujo presentado, alertas de Slack se envían tanto en success como en failure.',
+      correct: true,
+      explanation: 'Notificar éxitos confirma que el pipeline está vivo, no solo fallas.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Trigger rule para que `notify_failure` corra solo si algo upstream falló:',
+      template: 'trigger_rule=\\\'___\\\'',
+      answer: 'one_failed',
+      caseSensitive: false,
+      explanation: 'one_failed activa la task si al menos una upstream falló.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Source freshness en dbt avisa cuando:',
+      options: [
+        'Las tablas están vacías',
+        'Los datos en raw no se actualizan en el threshold definido',
+        'Las queries son lentas',
+        'Hay errores SQL',
+      ],
+      correctIndex: 1,
+      explanation: 'Detecta pipelines source detenidos antes de procesar data vieja.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="etl-e2e-exercise"
+  title="Calculador de notificaciones"
+  description="Implementa `notifications(taskResults)` donde taskResults es un objeto { taskName: 'success' | 'failed' | 'skipped' }. Devuelve { sendSuccess, sendFailure } booleanos: success si todas son success; failure si al menos una es failed."
+  language="javascript"
+  starterCode={`function notifications(taskResults) {
+  return { sendSuccess: false, sendFailure: false };
+}
+
+console.log(notifications({a:'success', b:'success'}));
+console.log(notifications({a:'success', b:'failed'}));
+console.log(notifications({a:'success', b:'skipped'}));`}
+  solution={`function notifications(taskResults) {
+  const results = Object.values(taskResults);
+  const sendFailure = results.some(r => r === 'failed');
+  const sendSuccess = !sendFailure && results.every(r => r === 'success');
+  return { sendSuccess, sendFailure };
+}
+console.log(notifications({a:'success', b:'success'}));
+console.log(notifications({a:'success', b:'failed'}));
+console.log(notifications({a:'success', b:'skipped'}));`}
+  hints={[
+    'sendFailure: alguna failed.',
+    'sendSuccess: ninguna failed Y todas success.',
+  ]}
+  tests={[
+    {
+      description: 'todas success',
+      assert: 'notifications({a:"success",b:"success"}).sendSuccess === true',
+    },
+    {
+      description: 'una failed',
+      assert: 'notifications({a:"success",b:"failed"}).sendFailure === true',
+    },
+    {
+      description: 'con skipped pero sin failed',
+      assert: 'notifications({a:"success",b:"skipped"}).sendSuccess === false',
+    },
+  ]}
+/>
+
+---
+
+## Mini-proyecto del módulo
+
+<Project
+  id="etl-module-project"
+  title="Pipeline ETL E2E completo"
+  description="Construye un pipeline end-to-end que combina Airflow + dbt + un warehouse cloud (puede ser BigQuery free tier o Snowflake trial)."
+  xpReward={500}
+  steps={[
+    {
+      id: 's1',
+      title: 'Setup local de Airflow + dbt',
+      description: 'Docker-compose con Airflow oficial + un proyecto dbt. Conecta a un warehouse free (BigQuery 1TB gratis/mes; Snowflake 30 días).',
+      successCriteria: 'airflow webserver y dbt run funcionan localmente.',
+    },
+    {
+      id: 's2',
+      title: 'Extract: API pública o dataset',
+      description: 'Elige una API (OpenWeather, COVID, NYC taxi). Script Python con timeout, retries.',
+      successCriteria: 'Función extract devuelve data fresca.',
+    },
+    {
+      id: 's3',
+      title: 'Load: a raw.<table> en warehouse',
+      description: 'Usando COPY (BigQuery LOAD, Snowflake COPY, Redshift COPY) o pandas to_sql.',
+      successCriteria: 'SELECT count(*) FROM raw.<table> da rows.',
+    },
+    {
+      id: 's4',
+      title: 'Transform: stg + fct con dbt',
+      description: 'Crea modelos staging (clean) + fact (agregado). Usa incremental para fact.',
+      successCriteria: 'dbt build pasa con 0 fallos.',
+    },
+    {
+      id: 's5',
+      title: 'Tests: 5 tests built-in mínimo',
+      description: 'unique, not_null, accepted_values, relationships, dbt_utils.expression_is_true.',
+      successCriteria: 'dbt test pasa.',
+    },
+    {
+      id: 's6',
+      title: 'DAG de Airflow orquestando todo',
+      description: 'extract → load → dbt build → notify. Idempotente: rerun no duplica.',
+      successCriteria: 'airflow dags test corre el DAG completo OK.',
+    },
+    {
+      id: 's7',
+      title: 'Documentación + lineage',
+      description: 'YAMLs con descripciones de cada modelo y columna; dbt docs serve.',
+      successCriteria: 'docs site muestra lineage completo y descripciones.',
+    },
+  ]}
+/>
+
+---
+
+¡Felicidades, completaste el Módulo 4! Próximo: **Data Warehouses**
+hands-on.

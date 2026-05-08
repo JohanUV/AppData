@@ -1,0 +1,284 @@
+## Cost optimization
+
+Los warehouses cloud son cómodos hasta que llega la primera factura
+sorprendente. Equipos pequeños llegan a gastar $50k/mes sin darse
+cuenta. Esta lección cubre los lever más impactantes para mantener el
+gasto bajo.
+
+### Anatomía de la factura
+
+Casi todos cobran por:
+
+1. **Storage** ($/GB/mes). Barato. ~$20/TB/mes.
+2. **Compute**:
+   - BigQuery: $5/TB **escaneado** (on-demand) o slots reservados.
+   - Snowflake: $X/hora cuando warehouse activo.
+   - Redshift: $/hora del cluster.
+3. **Egress**: sacar datos al exterior.
+4. **Streaming inserts** (BQ, otros): premium sobre batch loads.
+
+Storage rara vez es el problema. Compute lo es.
+
+### Top palancas (ordenadas por impacto)
+
+#### 1. Particionar y clusterizar
+
+Cubierto en lección anterior. Mejor inversión de tiempo: 1 hora de
+trabajo, 80% de ahorro en queries grandes.
+
+#### 2. Materializar resultados frecuentes
+
+Una query analítica corre 100 veces al día. Si tarda 30s y escanea
+500GB, son ~5 horas de compute y 50TB escaneados/día.
+
+Solución: pre-computar como tabla incremental con dbt.
+
+```sql
+-- Antes: cada dashboard re-calcula
+SELECT date, country, SUM(amount) FROM events
+WHERE date >= today() - 30
+GROUP BY 1, 2;
+
+-- Después: dbt incremental table; dashboards leen pre-agregado
+{{ config(materialized='incremental', unique_key=['date','country']) }}
+SELECT date, country, SUM(amount) AS revenue FROM events ...
+```
+
+10× menos costo, queries instantáneas.
+
+#### 3. Eliminar `SELECT *`
+
+En columnar, cada columna leída cuesta. Tabla con 100 columnas; query
+necesita 5; `SELECT *` paga 20× más. Sin razón.
+
+#### 4. Auto-suspend agresivo (Snowflake)
+
+```sql
+ALTER WAREHOUSE etl_wh SET AUTO_SUSPEND = 60;
+```
+
+Si tu warehouse corre 5 min/hora pero tiene auto-suspend de 10 min,
+pagas casi todo el día.
+
+#### 5. Escalado correcto
+
+Snowflake: warehouses chicos para queries chicas. Subir a XL solo
+para batches grandes ad-hoc, no para BI dashboards.
+
+BigQuery: en on-demand no aplica; en reservations, ajusta slots por
+proyecto.
+
+#### 6. Incremental en lugar de full-refresh
+
+dbt incremental:
+
+```sql
+{{ config(materialized='incremental') }}
+SELECT * FROM source
+{% if is_incremental() %}
+WHERE updated_at > (SELECT MAX(updated_at) FROM {{ this }})
+{% endif %}
+```
+
+Procesar 1M filas nuevas vs 100M históricas = 100× menos costo.
+
+#### 7. Time-travel y storage
+
+Snowflake mantiene tablas históricas (Time Travel) hasta 90 días.
+Cobra storage doble durante ese período. Si no necesitas tanto:
+
+```sql
+ALTER TABLE big_table SET DATA_RETENTION_TIME_IN_DAYS = 1;
+```
+
+#### 8. Drop / archive cold data
+
+Tabla con 5 años de eventos. ¿Realmente consultas data de hace 4
+años? Considera moverla a S3 cold storage o eliminarla.
+
+```sql
+DELETE FROM events WHERE date < CURRENT_DATE - 730;
+-- O mejor: particionar y droppear partition vieja
+```
+
+### Monitoreo
+
+<AnnotatedCode
+  language="sql"
+  filename="cost-monitoring.sql"
+  annotations={[
+    {
+      match: 'INFORMATION_SCHEMA.JOBS_BY_PROJECT',
+      title: 'BigQuery audit',
+      body: 'Tabla de sistema con todas las queries históricas: usuario, bytes, costo. Consúltala para detectar quién o qué query gasta más.',
+    },
+    {
+      match: 'total_bytes_billed',
+      title: 'Bytes facturables',
+      body: 'No es bytes leídos; es lo que paga (con mínimo 10MB por query). Ordenar por esto encuentra los pesos pesados.',
+    },
+    {
+      match: 'WAREHOUSE_METERING_HISTORY',
+      title: 'Snowflake equivalente',
+      body: 'Vista de cuántos credits consume cada warehouse. Filtra por hora para detectar picos.',
+    },
+  ]}
+>
+{`-- BigQuery: top 20 queries más caras del mes
+SELECT
+  user_email,
+  SUBSTR(query, 1, 100) AS query_snippet,
+  total_bytes_billed / POW(1024, 4) AS tb_billed,
+  total_bytes_billed / POW(1024, 4) * 5 AS usd_cost,
+  creation_time
+FROM \`region-us\`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
+WHERE creation_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+  AND statement_type = 'SELECT'
+ORDER BY total_bytes_billed DESC
+LIMIT 20;
+
+-- Snowflake equivalente
+SELECT
+  warehouse_name,
+  SUM(credits_used) AS total_credits,
+  SUM(credits_used) * 3 AS estimated_usd
+FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
+WHERE start_time >= DATEADD('day', -30, CURRENT_TIMESTAMP())
+GROUP BY 1
+ORDER BY 2 DESC;`}
+</AnnotatedCode>
+
+### Quotas y alerts
+
+Configura **límites de gasto** desde el día 1:
+
+- BigQuery: Cuotas por proyecto/usuario en bytes/día.
+- Snowflake: Resource Monitors con notificaciones a 50%, 75%, 100% del
+  budget.
+
+```sql
+CREATE RESOURCE MONITOR monthly_budget
+  WITH CREDIT_QUOTA = 1000
+  FREQUENCY = MONTHLY
+  TRIGGERS
+    ON 75 PERCENT DO NOTIFY
+    ON 90 PERCENT DO SUSPEND
+    ON 100 PERCENT DO SUSPEND_IMMEDIATE;
+```
+
+### Errores comunes
+
+- **Sin alerts ni quotas**: factura sorpresa al final del mes.
+- **Optimizar sin medir**: cambias cosas a ciegas. Mide antes y
+  después.
+- **`SELECT *` en producción** sin nadie revisar.
+- **Materialized views sin refresh adecuado**: pagas el storage y el
+  refresh sin beneficio.
+- **Tablas históricas inmensas que nadie consulta**: paga storage
+  para nada.
+
+### Para seguir aprendiendo
+
+- [BigQuery cost controls](https://cloud.google.com/bigquery/docs/best-practices-costs)
+- [Snowflake cost optimization](https://docs.snowflake.com/en/user-guide/cost-controlling)
+- [The data engineer's guide to managing costs](https://www.getdbt.com/blog)
+
+---
+
+## Quiz
+
+<Quiz
+  id="wh-cost-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Mayor palanca de costo en BigQuery on-demand:',
+      options: [
+        'Storage',
+        'Bytes escaneados (particionar + columnas explícitas + materialized)',
+        'Egress',
+        'Conexiones',
+      ],
+      correctIndex: 1,
+      explanation: '$5/TB scanned: optimizar bytes leídos = ahorrar.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'En Snowflake, cómo evitar pagar idle:',
+      options: [
+        'Apagar manual cada noche',
+        'AUTO_SUSPEND 60s + AUTO_RESUME',
+        'Reducir storage',
+        'Subir el size del warehouse',
+      ],
+      correctIndex: 1,
+      explanation: 'Suspend rápido cuando no hay queries.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Materializar como tabla incremental una query consultada 100 veces/día siempre cuesta más.',
+      correct: false,
+      explanation: 'Al revés: pre-computas una vez, lees 100 veces barato.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'En BigQuery, tabla de sistema con histórico de queries:',
+      template: 'INFORMATION_SCHEMA.___',
+      answer: 'JOBS_BY_PROJECT',
+      caseSensitive: false,
+      explanation: 'Vista clave para auditar costos por usuario/query.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Resource Monitor de Snowflake permite:',
+      options: [
+        'Solo ver gasto',
+        'Suspender warehouse automáticamente al exceder budget configurado',
+        'Aumentar size',
+        'Crear backups',
+      ],
+      correctIndex: 1,
+      explanation: 'Trigger en 75/90/100% con notify o suspend.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="wh-cost-exercise"
+  title="Estimador de ahorro por particionamiento"
+  description="Implementa `savingsByPartitioning(totalBytes, daysQueried, totalDays)` que devuelve % de ahorro. Si filtras 30 de 365 días, ahorras 91.7%."
+  language="javascript"
+  starterCode={`function savingsByPartitioning(totalBytes, daysQueried, totalDays) {
+  return 0;
+}
+
+console.log(savingsByPartitioning(1e12, 30, 365));   // ~0.918`}
+  solution={`function savingsByPartitioning(totalBytes, daysQueried, totalDays) {
+  if (totalDays <= 0) return 0;
+  return 1 - (daysQueried / totalDays);
+}
+console.log(savingsByPartitioning(1e12, 30, 365));`}
+  hints={[
+    'savings = 1 - (queried / total).',
+  ]}
+  tests={[
+    { description: 'mes de año', assert: 'Math.abs(savingsByPartitioning(1e12, 30, 365) - (1 - 30/365)) < 1e-9' },
+    { description: 'todo escaneado = 0 ahorro', assert: 'savingsByPartitioning(1e12, 365, 365) === 0' },
+    { description: 'nada escaneado = 100%', assert: 'savingsByPartitioning(1e12, 0, 365) === 1' },
+  ]}
+/>
+
+---
+
+Próxima lección, la última del módulo: **Reverse ETL**.

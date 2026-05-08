@@ -1,0 +1,237 @@
+## OLTP vs OLAP
+
+Cualquiera que trabaje con bases de datos termina chocando con la
+distinción entre **OLTP** (transaccional) y **OLAP** (analítico). Son
+dos mundos con requisitos opuestos: motores distintos, schemas
+distintos, optimizaciones distintas. Confundirlos es un error de
+diseño caro.
+
+### Qué optimiza cada uno
+
+**OLTP** — Online Transaction Processing:
+
+- Operaciones cortas y frecuentes: insertar una orden, actualizar un
+  perfil, consultar un usuario por id.
+- Miles de queries/segundo, cada una toca pocas filas.
+- Latencia importa: menor a 10ms.
+- Consistencia ACID estricta.
+- Ejemplos: la BD detrás de tu app web. Postgres, MySQL, SQL Server.
+
+**OLAP** — Online Analytical Processing:
+
+- Queries largas e infrecuentes: agregaciones sobre millones de filas.
+- Pocas queries/segundo, cada una escanea muchas columnas/filas.
+- Throughput importa: minutos OK si lee TBs.
+- Eventual consistencia OK.
+- Ejemplos: dashboard de KPIs, reports, ML features. BigQuery,
+  Snowflake, Redshift, ClickHouse.
+
+### Comparación lado a lado
+
+| Aspecto | OLTP | OLAP |
+|---|---|---|
+| Workload | Muchas queries cortas | Pocas queries largas |
+| Operaciones | Insert/Update/Read 1 fila | SUM/AVG/JOIN sobre millones |
+| Latencia objetivo | ms | s/min |
+| Storage | Row-oriented | Columnar |
+| Schema | Normalizado (3FN) | Star/Snowflake/wide |
+| Tamaño | GB | TB-PB |
+| Concurrencia | Miles de conexiones | Decenas |
+| Motor típico | Postgres, MySQL | BigQuery, Snowflake |
+
+### Por qué row-oriented vs columnar
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[OLTP query<br/>'dame la orden 123'] -->|necesita TODAS<br/>las columnas de UNA fila| B[Row storage<br/>óptimo]
+  C[OLAP query<br/>'suma amount<br/>del año'] -->|necesita UNA columna<br/>de MILLONES de filas| D[Columnar storage<br/>óptimo]`}
+</Diagram>
+
+Row storage agrupa columnas de cada fila → leer una fila completa es
+un solo seek. Columnar storage agrupa los valores de cada columna →
+leer millones de valores de una columna es secuencial.
+
+### Schema: 3FN vs star
+
+OLTP normaliza para evitar redundancia y escribir rápido. OLAP
+desnormaliza para leer rápido.
+
+OLTP típica:
+
+```sql
+customers, orders, order_items, products, addresses, ...
+-- 8 joins para una query analítica
+```
+
+OLAP típica (star schema, próxima lección):
+
+```sql
+fact_sales (millones de filas, números)
+dim_customer, dim_product, dim_date (pocas filas, atributos)
+-- 1 join central, denormalizado
+```
+
+### El pipeline típico: OLTP → OLAP
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[App<br/>writes] --> B[(OLTP DB<br/>Postgres)]
+  B -->|CDC / batch ETL| C[Lake<br/>S3 Parquet]
+  C -->|transform| D[(Warehouse<br/>OLAP)]
+  D --> E[BI Dashboards<br/>ML features]`}
+</Diagram>
+
+Tu app web escribe en Postgres (OLTP). Un proceso ETL/ELT (próximo
+módulo) replica/transforma esos datos hacia un warehouse (OLAP).
+Analistas y dashboards consultan el warehouse — nunca el OLTP.
+
+¿Por qué no consultar OLTP directamente?
+
+1. Una query analítica pesada bloquearía la BD productiva.
+2. OLTP no escala a TBs históricos.
+3. OLTP no tiene los datos en forma analítica.
+
+### Casos límite
+
+Algunos motores intentan ambos (HTAP — Hybrid Transactional/Analytical):
+
+- **DuckDB**: columnar, embebido, single-node. Ideal para datos
+  medianos (GB-decenas de GB) y analítica local.
+- **TiDB / CockroachDB**: SQL distribuido con replicación columnar.
+- **PostgreSQL + columnar extensions**: Citus, Hydra.
+
+Para 95% de casos: usa Postgres para OLTP, Snowflake/BigQuery/Redshift
+para OLAP.
+
+### Errores comunes
+
+- **Correr queries analíticas en producción OLTP**: lock contention, app
+  lenta.
+- **Usar Snowflake para una app web**: latencia de segundos donde
+  necesitas ms.
+- **Schema OLTP en warehouse**: 8 joins por query, queries lentas y
+  caras.
+- **Schema OLAP (denormalizado) en OLTP**: anomalías, inserts lentos.
+- **Replicar producción a producción** sin pasar por warehouse:
+  saturas la primaria.
+
+### Para seguir aprendiendo
+
+- [Designing Data-Intensive Applications — Kleppmann](https://dataintensive.net/)
+  — capítulo 3 cubre OLTP vs OLAP a profundidad.
+- [BigQuery vs Postgres comparison](https://cloud.google.com/blog)
+
+---
+
+## Quiz
+
+<Quiz
+  id="modeling-oltp-olap-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'OLTP optimiza para...',
+      options: [
+        'Pocas queries largas que agregan millones de filas',
+        'Muchas queries cortas que tocan pocas filas con baja latencia',
+        'Almacenamiento barato',
+        'Dashboards',
+      ],
+      correctIndex: 1,
+      explanation: 'OLTP = transacciones operacionales rápidas.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '¿Por qué columnar storage es mejor para OLAP?',
+      options: [
+        'Es más nuevo',
+        'Lee solo las columnas que la query necesita; menos I/O',
+        'Soporta más concurrencia',
+        'No requiere índices',
+      ],
+      correctIndex: 1,
+      explanation: 'Aggregaciones tocan pocas columnas; columnar evita leer las demás.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Schema 3FN normalizado es ideal para warehouses analíticos.',
+      correct: false,
+      explanation: 'OLAP suele desnormalizar (star schema) para evitar joins.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Tipo de motor adecuado para una app web con miles de usuarios concurrentes:',
+      template: '___',
+      answer: 'OLTP',
+      caseSensitive: false,
+      explanation: 'OLTP: muchas queries cortas, baja latencia.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'En el flujo típico, ¿quién consulta el warehouse?',
+      options: [
+        'La app productiva',
+        'Analistas, dashboards y procesos ML',
+        'Nadie',
+        'Solo los DBAs',
+      ],
+      correctIndex: 1,
+      explanation: 'Warehouse para analytics; OLTP para producción.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="modeling-oltp-olap-exercise"
+  title="Clasificador de queries"
+  description="Implementa `classify(query)` que dada una string SQL devuelva 'OLTP' o 'OLAP' según heurísticas: queries con SUM/AVG/COUNT/GROUP BY tienden a ser OLAP; con WHERE id = N son OLTP."
+  language="javascript"
+  starterCode={`function classify(query) {
+  return 'OLTP';
+}
+
+console.log(classify('SELECT * FROM users WHERE id = 5'));           // OLTP
+console.log(classify('SELECT country, SUM(amount) FROM payments GROUP BY country')); // OLAP`}
+  solution={`function classify(query) {
+  const q = query.toUpperCase();
+  if (/\\b(SUM|AVG|COUNT|MIN|MAX)\\s*\\(/.test(q)) return 'OLAP';
+  if (/GROUP\\s+BY/.test(q)) return 'OLAP';
+  return 'OLTP';
+}
+console.log(classify('SELECT * FROM users WHERE id = 5'));
+console.log(classify('SELECT country, SUM(amount) FROM payments GROUP BY country'));`}
+  hints={[
+    'Convierte a mayúsculas para comparar.',
+    'Regex para detectar funciones agregadas y GROUP BY.',
+  ]}
+  tests={[
+    {
+      description: 'GROUP BY → OLAP',
+      assert: 'classify("SELECT a FROM t GROUP BY a") === "OLAP"',
+    },
+    {
+      description: 'SUM → OLAP',
+      assert: 'classify("SELECT SUM(x) FROM t") === "OLAP"',
+    },
+    {
+      description: 'WHERE id = N → OLTP',
+      assert: 'classify("SELECT * FROM users WHERE id = 1") === "OLTP"',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **star schema** — el modelo dimensional que domina los
+warehouses.

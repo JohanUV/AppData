@@ -1,0 +1,305 @@
+## Snowflake hands-on
+
+**Snowflake** es el warehouse más adoptado en empresas en 2026. A
+diferencia de BigQuery (serverless puro), Snowflake usa **virtual
+warehouses** (clusters) que tú levantas, escalas y apagas. Esto te da
+más control de costos y aislamiento de workloads.
+
+### Trial gratuito
+
+- 30 días + $400 USD de crédito.
+- Suficiente para hacer todo este módulo y experimentar.
+
+[signup.snowflake.com](https://signup.snowflake.com/)
+
+### Estructura
+
+```
+account
+└── database
+    └── schema
+        ├── table
+        ├── view
+        └── stage
+```
+
+- **Account**: tu instancia.
+- **Database**: agrupamiento alto.
+- **Schema**: ~ dataset en BigQuery, namespace en Postgres.
+- **Stage**: location intermedia para load/unload (interno o externo a
+  S3/GCS).
+
+### Virtual warehouses (compute)
+
+Lo que separa Snowflake del resto: los clusters de compute son
+**objetos** que tú creas, levantas y apagas a voluntad.
+
+```sql
+CREATE WAREHOUSE etl_wh
+  WITH WAREHOUSE_SIZE = 'MEDIUM'
+  AUTO_SUSPEND = 60                -- apaga tras 60s sin uso
+  AUTO_RESUME = TRUE
+  INITIALLY_SUSPENDED = TRUE;
+
+USE WAREHOUSE etl_wh;
+```
+
+Tamaños: XS, S, M, L, XL, ... 4XL. Cada salto duplica costo y
+paralelismo.
+
+**Clave del costo**: `AUTO_SUSPEND` corto. Si tu pipeline corre 5
+min/hora, no tiene sentido tener el warehouse prendido 24/7.
+
+### Multi-cluster warehouses
+
+Para concurrencia alta:
+
+```sql
+CREATE WAREHOUSE bi_wh
+  WITH WAREHOUSE_SIZE = 'LARGE'
+  MIN_CLUSTER_COUNT = 1
+  MAX_CLUSTER_COUNT = 5
+  SCALING_POLICY = 'STANDARD';
+```
+
+Cuando hay cola de queries, Snowflake levanta clusters extra (hasta 5)
+y los apaga al desocuparse. Útil para BI con picos.
+
+### Roles y permisos
+
+```sql
+USE ROLE ACCOUNTADMIN;
+
+CREATE ROLE analyst;
+GRANT USAGE ON WAREHOUSE bi_wh TO ROLE analyst;
+GRANT USAGE ON DATABASE analytics TO ROLE analyst;
+GRANT USAGE ON SCHEMA analytics.marts TO ROLE analyst;
+GRANT SELECT ON ALL TABLES IN SCHEMA analytics.marts TO ROLE analyst;
+GRANT ROLE analyst TO USER alice;
+```
+
+Snowflake roles son granulares y heredables. Mejor invertir tiempo
+desde el día 1 para no terminar con todos siendo `ACCOUNTADMIN`.
+
+### Cargar datos: COPY desde stage
+
+```sql
+-- Crear stage externo apuntando a S3
+CREATE STAGE my_stage
+  URL = 's3://my-bucket/data/'
+  STORAGE_INTEGRATION = my_aws_int
+  FILE_FORMAT = (TYPE = PARQUET);
+
+-- Copiar a tabla
+COPY INTO raw.orders
+  FROM @my_stage/orders/
+  FILE_FORMAT = (TYPE = PARQUET)
+  ON_ERROR = 'CONTINUE'
+  PURGE = FALSE;
+```
+
+Snowflake paraleliza el COPY entre cores del warehouse — TBs en
+minutos. Para datos pequeños, también puedes:
+
+```sql
+PUT file://./data.csv @my_stage;            -- sube local a stage
+COPY INTO raw.things FROM @my_stage/data.csv;
+```
+
+### Time travel: el superpoder
+
+```sql
+-- Ver tabla como estaba hace 1 hora
+SELECT * FROM orders AT(OFFSET => -60*60);
+
+-- Como estaba en una fecha exacta
+SELECT * FROM orders AT(TIMESTAMP => '2026-05-15 10:00:00'::TIMESTAMP);
+
+-- "Antes" de la query que la dañó
+SELECT * FROM orders BEFORE(STATEMENT => 'query_id_here');
+
+-- Restaurar
+CREATE OR REPLACE TABLE orders AS
+  SELECT * FROM orders AT(OFFSET => -60*60);
+```
+
+Default retention: 1 día (gratis). Premium: hasta 90 días.
+
+Inválida en BigQuery free tier (max 7 days, configurable). Diferenciador
+de Snowflake.
+
+### Zero-copy clone
+
+```sql
+CREATE DATABASE analytics_dev CLONE analytics;
+```
+
+Clona toda una BD instantáneamente, sin duplicar storage. Ideal para
+ambientes dev/staging. Cobras solo storage de los cambios.
+
+### Streams + Tasks: CDC nativo
+
+<AnnotatedCode
+  language="sql"
+  filename="streams-tasks.sql"
+  annotations={[
+    {
+      match: 'CREATE STREAM',
+      title: 'Stream = changelog',
+      body: 'Captura inserts/updates/deletes desde el offset actual. Lo consumes y avanza el offset automáticamente.',
+    },
+    {
+      match: 'CREATE TASK',
+      title: 'Task = scheduled SQL',
+      body: 'Un mini-cron de Snowflake. Útil para pipelines simples sin Airflow.',
+    },
+    {
+      match: 'WHEN SYSTEM$STREAM_HAS_DATA',
+      title: 'Predicate guard',
+      body: 'La task solo corre si hay datos nuevos en el stream. Eficiente: no consume warehouse en vano.',
+    },
+  ]}
+>
+{`-- Stream sobre raw table
+CREATE STREAM orders_stream ON TABLE raw.orders;
+
+-- Task que consume el stream cada hora
+CREATE TASK process_orders
+  WAREHOUSE = etl_wh
+  SCHEDULE = '60 MINUTE'
+  WHEN SYSTEM$STREAM_HAS_DATA('orders_stream')
+AS
+  INSERT INTO marts.orders_clean
+  SELECT order_id, ... FROM orders_stream;
+
+ALTER TASK process_orders RESUME;`}
+</AnnotatedCode>
+
+### SQL específico de Snowflake
+
+- **`QUALIFY`**: como `WHERE` pero para window functions.
+  ```sql
+  SELECT * FROM orders
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC) = 1;
+  ```
+- **`PIVOT` / `UNPIVOT` nativos** (no como BigQuery con `CASE`).
+- **`OBJECT_AGG`, `ARRAY_AGG`**: agregar a JSON/ARRAY.
+- **VARIANT**: tipo nativo para JSON semi-estructurado.
+
+### Errores comunes
+
+- **Warehouse XL para queries pequeñas**: factura inflada sin
+  beneficio (queries chicas no aprovechan más cores).
+- **AUTO_SUSPEND alto** (5 min): pagas tiempo idle.
+- **Sin separar warehouses por workload**: BI lento bloquea ETL y
+  viceversa.
+- **Demasiados ACCOUNTADMIN**: nadie puede revertir cuando alguien
+  borra producción por error.
+- **No usar zero-copy clone**: pagas storage por copias innecesarias
+  para dev.
+
+### Para seguir aprendiendo
+
+- [Snowflake docs](https://docs.snowflake.com/)
+- [Snowflake Best Practices](https://docs.snowflake.com/en/user-guide/admin-best-practices)
+- [Snowflake University](https://learn.snowflake.com/) — cursos
+  gratuitos.
+
+---
+
+## Quiz
+
+<Quiz
+  id="wh-snowflake-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Diferencia clave entre Snowflake y BigQuery:',
+      options: [
+        'BigQuery es serverless puro; Snowflake usa virtual warehouses (clusters) que tú levantas/apagas',
+        'Snowflake no soporta SQL',
+        'BigQuery es más caro siempre',
+        'Snowflake es solo para AWS',
+      ],
+      correctIndex: 0,
+      explanation: 'Snowflake da control sobre clusters; BigQuery los abstrae completamente.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Cómo evitar pagar idle time en Snowflake?',
+      options: [
+        'Apagar manualmente cada warehouse',
+        'AUTO_SUSPEND corto (60s) — Snowflake apaga automáticamente tras inactividad',
+        'No es posible',
+        'Usar BigQuery',
+      ],
+      correctIndex: 1,
+      explanation: 'AUTO_SUSPEND + AUTO_RESUME = paga solo cuando se usa.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Zero-copy clone en Snowflake duplica todo el storage físicamente.',
+      correct: false,
+      explanation: 'Zero-copy = solo metadata. Storage real comienza al divergir.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Cláusula tipo WHERE para window functions:',
+      template: '___ ROW_NUMBER() OVER (...) = 1',
+      answer: 'QUALIFY',
+      caseSensitive: false,
+      explanation: 'QUALIFY es Snowflake-specific (también en BigQuery).',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Snowflake Streams sirven para:',
+      options: [
+        'Streaming sub-segundo',
+        'Capturar cambios (CDC) de una tabla con offset persistente',
+        'Reemplazar Kafka',
+        'Cargar Parquet',
+      ],
+      correctIndex: 1,
+      explanation: 'Stream = changelog consumible.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="wh-snowflake-exercise"
+  title="Calculador de costo Snowflake"
+  description="Implementa `wh_cost(sizeFactor, hoursActive, pricePerCreditHour)` donde sizeFactor: XS=1, S=2, M=4, L=8, XL=16. Devuelve costo USD."
+  language="javascript"
+  starterCode={`function whCost(sizeFactor, hoursActive, pricePerCreditHour) {
+  return 0;
+}
+
+console.log(whCost(4, 2, 3));   // M (4 credits/h) × 2h × $3 = 24`}
+  solution={`function whCost(sizeFactor, hoursActive, pricePerCreditHour) {
+  return sizeFactor * hoursActive * pricePerCreditHour;
+}
+console.log(whCost(4, 2, 3));`}
+  hints={[
+    'Multiplicación simple.',
+  ]}
+  tests={[
+    { description: 'M, 2h, $3', assert: 'whCost(4, 2, 3) === 24' },
+    { description: 'XS, 0.5h, $3', assert: 'whCost(1, 0.5, 3) === 1.5' },
+    { description: '0 horas', assert: 'whCost(8, 0, 3) === 0' },
+  ]}
+/>
+
+---
+
+Próxima lección: **particionamiento y clustering**.

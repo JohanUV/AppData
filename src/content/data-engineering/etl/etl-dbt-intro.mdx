@@ -1,0 +1,335 @@
+## Introducción a dbt
+
+**dbt** (data build tool) es la herramienta que cambió cómo se hacen
+las transformaciones en warehouses analíticos. Si Airflow es el
+"orquestador", dbt es el "generador de transformaciones SQL". En la
+stack moderna: extract+load (Airbyte/Fivetran) → dbt → BI.
+
+### Qué problema resuelve
+
+Tienes 50 queries SQL en una carpeta. Algunas dependen de otras. Sin
+dbt:
+
+- Si refactorizas una columna, hay que buscar y editar todas las que
+  la usan.
+- Si una query falla, las downstream corren con data parcial.
+- Documentar el modelo es un README que se queda viejo.
+- Tests "manuales" en Excel.
+
+dbt te da:
+
+- **Modelos** (queries SQL) con dependencias declaradas.
+- **Lineage** auto-generado.
+- **Tests** declarativos sobre los datos.
+- **Docs** auto-generados.
+- **Macros** para reutilizar SQL.
+- **Versionado** en Git.
+
+### Cómo funciona
+
+dbt **no extrae ni carga datos**. Asume que los datos crudos ya están
+en tu warehouse. dbt **transforma**: lee de raw tables, ejecuta SQL,
+crea views o tables con el resultado.
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[Raw data<br/>en warehouse] -->|dbt run| B[Models<br/>views/tables]
+  B --> C[Marts<br/>vistas finales]
+  D[YAML schema] -.tests.-> B
+  D -.docs.-> B`}
+</Diagram>
+
+### Estructura típica de un proyecto
+
+```
+my_dbt/
+├── dbt_project.yml          # config principal
+├── profiles.yml             # credenciales (gitignored)
+├── models/
+│   ├── staging/
+│   │   ├── stg_orders.sql
+│   │   ├── stg_customers.sql
+│   │   └── _stg_schema.yml
+│   ├── intermediate/
+│   │   └── int_order_summary.sql
+│   └── marts/
+│       ├── fct_revenue_daily.sql
+│       └── dim_customer.sql
+├── tests/                   # tests custom SQL
+├── macros/                  # funciones reutilizables
+└── snapshots/               # SCD Type 2 helpers
+```
+
+Convención: prefijos `stg_`, `int_`, `fct_`, `dim_`. Los staging hacen
+la limpieza inicial; intermediate hacen los joins; marts son los
+modelos finales que consume BI.
+
+### El primer modelo
+
+```sql
+-- models/staging/stg_orders.sql
+{{ config(materialized='view') }}
+
+SELECT
+    id          AS order_id,
+    customer_id,
+    status,
+    amount::DECIMAL AS amount,
+    created_at::TIMESTAMP AS created_at
+FROM {{ source('app', 'orders') }}
+WHERE deleted_at IS NULL
+```
+
+Cuando ejecutas `dbt run`, dbt genera:
+
+```sql
+CREATE OR REPLACE VIEW analytics.stg_orders AS
+SELECT
+    id          AS order_id,
+    customer_id,
+    status,
+    amount::DECIMAL AS amount,
+    created_at::TIMESTAMP AS created_at
+FROM raw_app.orders
+WHERE deleted_at IS NULL;
+```
+
+`{{ source('app', 'orders') }}` se resuelve a `raw_app.orders`
+usando la config en `_sources.yml`. Si cambias la BD source, solo
+editas un YAML.
+
+### Materializaciones
+
+`{{ config(materialized='...') }}` decide cómo se persiste el modelo:
+
+- **`view`** (default): no almacena datos, solo CREATE VIEW. Rápido
+  de actualizar, pero recomputa cada SELECT.
+- **`table`**: CREATE TABLE AS SELECT. Costoso al refrescar pero
+  rápido de consultar.
+- **`incremental`**: solo procesa filas nuevas/cambiadas. Esencial
+  para fact tables grandes.
+- **`ephemeral`**: no se persiste; se inlinea como CTE en modelos
+  downstream.
+
+### Refs: la magia del lineage
+
+```sql
+-- models/marts/fct_revenue_daily.sql
+{{ config(materialized='table') }}
+
+SELECT
+    date_trunc('day', o.created_at) AS day,
+    SUM(o.amount) AS revenue
+FROM {{ ref('stg_orders') }} o
+WHERE o.status = 'paid'
+GROUP BY 1
+```
+
+`{{ ref('stg_orders') }}` se resuelve al nombre real (`analytics.stg_orders`)
+**y** dbt registra que `fct_revenue_daily` depende de `stg_orders`.
+Resultado: lineage automático.
+
+```bash
+dbt run                       # ejecuta todos los modelos en orden topológico
+dbt run --select stg_orders+  # corre stg_orders y todo lo que depende de él
+dbt run --select +fct_revenue # corre fct_revenue y todas sus dependencias
+```
+
+### Tests built-in
+
+```yaml
+# models/staging/_stg_schema.yml
+version: 2
+
+models:
+  - name: stg_orders
+    description: Órdenes limpias
+    columns:
+      - name: order_id
+        description: ID único
+        tests:
+          - unique
+          - not_null
+      - name: status
+        tests:
+          - accepted_values:
+              values: ['pending', 'paid', 'cancelled', 'refunded']
+      - name: customer_id
+        tests:
+          - relationships:
+              to: ref('stg_customers')
+              field: customer_id
+```
+
+```bash
+dbt test                      # corre todos los tests
+```
+
+Si `unique` falla en `order_id`, dbt te dice exactamente qué órdenes
+están duplicadas. Es como linter para tus datos.
+
+### Run + test en un solo comando
+
+```bash
+dbt build                     # run + test combinados
+```
+
+`build` ejecuta cada modelo y sus tests; si los tests fallan, no se
+ejecutan los downstream. Failure isolation built-in.
+
+### Cómo encaja con Airflow
+
+dbt se invoca **desde** Airflow:
+
+```python
+@task
+def dbt_build():
+    subprocess.run(['dbt', 'build'], check=True)
+```
+
+O con la integración oficial: `airflow-dbt-python`. Airflow orquesta;
+dbt transforma. División clara de responsabilidades.
+
+### Errores comunes
+
+- **Hardcodear nombres de schema/tabla**: `FROM raw_app.orders` en
+  lugar de `{{ source(...) }}`. Si cambia el source, todo rompe.
+- **No usar refs**: `FROM analytics.stg_orders` directo — dbt no
+  detecta la dependencia, lineage roto.
+- **Materializar todo como `view`**: queries downstream lentas.
+- **Materializar todo como `table`**: refresh lento, costoso.
+- **Sin tests**: pipelines se rompen silenciosamente.
+
+### Para seguir aprendiendo
+
+- [dbt Learn](https://courses.getdbt.com/) — cursos gratis oficiales
+- [dbt docs](https://docs.getdbt.com/)
+- [Modern Data Stack](https://www.moderndatastack.xyz/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="etl-dbt-intro-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Qué hace dbt?',
+      options: [
+        'Extrae datos de APIs',
+        'Transforma datos dentro del warehouse usando SQL + dependencias',
+        'Es un orquestador',
+        'Reemplaza Airflow',
+      ],
+      correctIndex: 1,
+      explanation: 'dbt = T de ELT. No hace E ni L.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '`{{ ref(\'stg_orders\') }}` hace dos cosas:',
+      options: [
+        'Solo resuelve el nombre',
+        'Resuelve nombre + registra dependencia para lineage',
+        'Crea índice',
+        'Materializa como view',
+      ],
+      correctIndex: 1,
+      explanation: 'Es la clave del lineage automático.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: '`incremental` materialization solo procesa filas nuevas/cambiadas en cada run.',
+      correct: true,
+      explanation: 'Esencial para facts grandes que crecen cada día.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Comando que combina run + test:',
+      template: 'dbt ___',
+      answer: 'build',
+      caseSensitive: false,
+      explanation: 'dbt build = run + test, con failure isolation.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Convención de nombres en dbt:',
+      options: [
+        'No hay convención',
+        'Prefijos: stg_ (staging), int_ (intermediate), fct_/dim_ (marts)',
+        'Solo CamelCase',
+        'snake_case obligatorio',
+      ],
+      correctIndex: 1,
+      explanation: 'stg, int, fct, dim — nombrado por capa.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="etl-dbt-intro-exercise"
+  title="Resolver dependencias de modelos"
+  description="Implementa `runOrder(deps)` donde deps es objeto { modelo: [dependencias] }. Devuelve array de modelos en orden topológico (deps primero)."
+  language="javascript"
+  starterCode={`function runOrder(deps) {
+  return [];
+}
+
+console.log(runOrder({
+  fct_revenue: ['stg_orders'],
+  stg_orders: [],
+  dim_customer: ['stg_customers'],
+  stg_customers: [],
+}));`}
+  solution={`function runOrder(deps) {
+  const result = [];
+  const visited = new Set();
+  function visit(n) {
+    if (visited.has(n)) return;
+    visited.add(n);
+    for (const d of deps[n] || []) visit(d);
+    result.push(n);
+  }
+  for (const n of Object.keys(deps)) visit(n);
+  return result;
+}
+console.log(runOrder({
+  fct_revenue: ['stg_orders'],
+  stg_orders: [],
+  dim_customer: ['stg_customers'],
+  stg_customers: [],
+}));`}
+  hints={[
+    'DFS post-order: visita las dependencias antes de añadir el nodo.',
+    'Set visited para evitar duplicados.',
+  ]}
+  tests={[
+    {
+      description: 'orden simple',
+      assert: 'runOrder({a:["b"],b:[]}).join(",") === "b,a"',
+    },
+    {
+      description: 'cadena de 3',
+      assert: 'runOrder({c:["b"],b:["a"],a:[]}).join(",") === "a,b,c"',
+    },
+    {
+      description: 'sin deps cualquier orden',
+      assert: 'runOrder({a:[],b:[]}).length === 2',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **dbt models, tests y docs**.

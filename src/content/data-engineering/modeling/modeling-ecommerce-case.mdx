@@ -1,0 +1,397 @@
+## Caso práctico: modelar un e-commerce
+
+Vamos a aplicar todo lo aprendido en un caso realista: modelar el
+warehouse analítico de un e-commerce. Vas a tomar las tablas OLTP
+(normalizadas, transaccionales) y diseñar el star schema OLAP
+correspondiente.
+
+### Lo que tenemos en OLTP (Postgres de la app)
+
+```
+customers (id, name, email, country, created_at, updated_at)
+products  (id, name, category_id, price, sku, created_at, updated_at)
+categories (id, name, department_id)
+departments (id, name)
+orders    (id, customer_id, status, created_at, total_amount)
+order_items (order_id, product_id, quantity, unit_price)
+addresses (id, customer_id, line, city, country, is_default)
+```
+
+Schema 3FN clásico. Bueno para escribir órdenes; malo para "ventas
+mensuales por país y categoría".
+
+### Paso 1: identificar los hechos (facts)
+
+¿Qué eventos numéricos quieres medir? Para un e-commerce, mínimo:
+
+- **Ventas** (orders + order_items): cantidad, monto.
+- **Cancelaciones / refunds**.
+- **Visitas / sesiones** (si tienes analytics de web).
+- **Inventario** (snapshots periódicos).
+
+Empezamos con `fact_sales`. La granularidad más útil: **una fila por
+order_item** (línea de orden). Así puedes responder "ventas por
+producto" o "ventas por cliente" sin perder detalle.
+
+### Paso 2: identificar dimensiones
+
+Para cada query analítica que prevés, ¿qué necesitas filtrar/agrupar?
+
+- **dim_customer** — quién compró.
+- **dim_product** — qué se compró.
+- **dim_date** — cuándo.
+- **dim_geography** — dónde (de la dirección).
+
+### Paso 3: schema final
+
+<Diagram type="mermaid">
+{`erDiagram
+  fact_sales }o--|| dim_customer : has
+  fact_sales }o--|| dim_product : has
+  fact_sales }o--|| dim_date : has
+  fact_sales }o--|| dim_geography : has
+  fact_sales {
+    bigint sale_key
+    bigint customer_key
+    bigint product_key
+    int date_key
+    bigint geography_key
+    string order_id
+    int quantity
+    decimal unit_price
+    decimal line_amount
+    decimal discount_amount
+    string order_status
+  }
+  dim_customer {
+    bigint customer_key
+    string customer_id
+    string name
+    string email_domain
+    string segment
+    date signup_date
+    date effective_from
+    date effective_to
+    boolean is_current
+  }
+  dim_product {
+    bigint product_key
+    string product_id
+    string name
+    string category
+    string department
+    decimal current_price
+    string sku
+    date effective_from
+    date effective_to
+    boolean is_current
+  }
+  dim_date {
+    int date_key
+    date date
+    int year
+    int quarter
+    int month
+    string day_of_week
+    boolean is_weekend
+  }
+  dim_geography {
+    bigint geography_key
+    string country
+    string region
+    string city
+  }`}
+</Diagram>
+
+### Paso 4: decisiones clave de diseño
+
+**1. ¿Snowflake o star?** dim_product incluye category y department
+denormalizados. **Star**: queries más simples y rápidas. La duplicación
+es trivial en motor columnar.
+
+**2. ¿SCD?** dim_customer y dim_product en **Type 2**. Razones:
+
+- Customer puede cambiar segment (paso de "free" a "premium"). Los
+  reports históricos deben mostrar el segment al momento de la venta.
+- Product cambia precio o categoría. El precio en `dim_product` es el
+  "actual"; el precio efectivo de la venta vive en `fact_sales`
+  (`unit_price`).
+
+**3. ¿Qué columnas en fact?** Solo:
+
+- FKs a dims (4).
+- order_id (degenerate dimension — útil para drill-down).
+- quantity, unit_price, line_amount, discount_amount (métricas
+  aditivas).
+- order_status (para filtros, podría moverse a dim_status pero es
+  baja cardinalidad).
+
+**4. dim_date pre-poblada** con 10 años (pasado y futuro): año,
+trimestre, mes, día semana, fiscal_year, holiday flag.
+
+### Paso 5: el ETL
+
+```sql
+-- fact_sales (incremental por order_id)
+INSERT INTO warehouse.fact_sales (
+    customer_key, product_key, date_key, geography_key,
+    order_id, quantity, unit_price, line_amount, ...
+)
+SELECT
+    dc.customer_key,
+    dp.product_key,
+    dd.date_key,
+    dg.geography_key,
+    o.id,
+    oi.quantity,
+    oi.unit_price,
+    oi.quantity * oi.unit_price AS line_amount,
+    o.status
+FROM source.orders o
+JOIN source.order_items oi ON oi.order_id = o.id
+JOIN warehouse.dim_customer dc
+  ON dc.customer_id = o.customer_id::TEXT
+  AND o.created_at BETWEEN dc.effective_from AND COALESCE(dc.effective_to, '9999-12-31')
+JOIN warehouse.dim_product dp
+  ON dp.product_id = oi.product_id::TEXT
+  AND o.created_at BETWEEN dp.effective_from AND COALESCE(dp.effective_to, '9999-12-31')
+JOIN warehouse.dim_date dd ON dd.date = o.created_at::DATE
+JOIN source.addresses a ON a.customer_id = o.customer_id AND a.is_default = TRUE
+JOIN warehouse.dim_geography dg ON dg.country = a.country AND dg.city = a.city
+WHERE o.id NOT IN (SELECT order_id FROM warehouse.fact_sales);
+```
+
+El JOIN con `BETWEEN effective_from AND effective_to` es **crítico**
+en SCD Type 2: te da la versión vigente al momento de la venta.
+
+### Paso 6: queries que el modelo soporta
+
+```sql
+-- Top categorías por país en Q1 2026
+SELECT g.country, p.category, SUM(f.line_amount) AS revenue
+FROM fact_sales f
+JOIN dim_geography g USING (geography_key)
+JOIN dim_product p USING (product_key)
+JOIN dim_date d USING (date_key)
+WHERE d.quarter = 1 AND d.year = 2026
+GROUP BY 1, 2
+ORDER BY revenue DESC;
+
+-- Customer LTV (lifetime value)
+SELECT c.customer_id, c.segment, SUM(f.line_amount) AS ltv
+FROM fact_sales f
+JOIN dim_customer c USING (customer_key)
+WHERE c.is_current = TRUE
+GROUP BY 1, 2
+ORDER BY ltv DESC LIMIT 100;
+
+-- Repeat rate por cohort de signup
+SELECT
+  date_trunc('month', c.signup_date) AS cohort,
+  COUNT(DISTINCT c.customer_id) AS cohort_size,
+  COUNT(DISTINCT CASE WHEN f.order_id IS NOT NULL THEN c.customer_id END) AS bought,
+  COUNT(DISTINCT f.order_id) / COUNT(DISTINCT c.customer_id)::FLOAT AS orders_per_user
+FROM dim_customer c
+LEFT JOIN fact_sales f USING (customer_key)
+WHERE c.is_current = TRUE
+GROUP BY 1;
+```
+
+### Errores típicos en este modelado
+
+- **Olvidar la JOIN BETWEEN para SCD2**: terminas usando la dim
+  actual aunque la venta fue hace 2 años. Reportes históricos
+  inconsistentes.
+- **Granularidad por orden** (no por order_item): pierdes drill-down
+  por producto.
+- **Métricas calculadas en BI**: `line_amount = quantity * unit_price`
+  debería estar en la fact, no calculado en cada dashboard.
+- **dim_date no pre-poblada**: cada query hace `EXTRACT` en lugar de
+  filtrar por columna pre-calculada.
+- **Omitir `is_current`**: queries para "estado actual" hacen
+  filtrado complejo por effective_to IS NULL.
+
+### Para seguir aprendiendo
+
+- [The Data Warehouse Toolkit — Kimball capítulo 4](https://www.amazon.com/Data-Warehouse-Toolkit-Definitive-Dimensional/dp/1118530802)
+- [Modeling tutorial — Holistics](https://www.holistics.io/books/setup-analytics/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="modeling-ecommerce-quiz"
+  xpReward={80}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Granularidad recomendada para fact_sales en e-commerce:',
+      options: [
+        'Una fila por cliente',
+        'Una fila por orden',
+        'Una fila por línea de orden (order_item)',
+        'Una fila por mes',
+      ],
+      correctIndex: 2,
+      explanation: 'La grain más fina permitida — soporta cualquier query de drill-down.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'En SCD Type 2, la fact_sales debe joinearse con la dim usando BETWEEN effective_from AND effective_to.',
+      correct: true,
+      explanation: 'Para obtener la versión vigente al momento de la venta.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: '¿Por qué guardar `unit_price` en fact_sales si dim_product tiene `current_price`?',
+      options: [
+        'Para redundancia',
+        'unit_price es el precio efectivo de esa venta; current_price puede haber cambiado después',
+        'No es necesario',
+        'Por bug',
+      ],
+      correctIndex: 1,
+      explanation: 'fact congela los hechos numéricos del momento de la transacción.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Tipo de SCD para customers que cambian de segment:',
+      template: 'Type ___',
+      answer: '2',
+      caseSensitive: false,
+      explanation: 'Type 2: preserva historia.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: '`order_id` en fact_sales se llama formalmente:',
+      options: [
+        'Foreign key',
+        'Degenerate dimension — atributo de la fact sin tabla dim asociada',
+        'Surrogate key',
+        'Composite key',
+      ],
+      correctIndex: 1,
+      explanation: 'Degenerate dim: atributo categórico que vive solo en la fact (útil para drill-down).',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="modeling-ecommerce-exercise"
+  title="Calcular LTV"
+  description="Implementa `ltv(customers, sales)` que devuelve un objeto { customer_id: total_amount } sumando los amounts de sales por customer_id."
+  language="javascript"
+  starterCode={`function ltv(customers, sales) {
+  return {};
+}
+
+const customers = [{id:'A'},{id:'B'},{id:'C'}];
+const sales = [
+  {customer_id:'A', amount:100},
+  {customer_id:'A', amount:50},
+  {customer_id:'B', amount:200},
+];
+console.log(ltv(customers, sales));`}
+  solution={`function ltv(customers, sales) {
+  const totals = {};
+  for (const c of customers) totals[c.id] = 0;
+  for (const s of sales) {
+    if (totals[s.customer_id] !== undefined) {
+      totals[s.customer_id] += s.amount;
+    }
+  }
+  return totals;
+}
+const customers = [{id:'A'},{id:'B'},{id:'C'}];
+const sales = [
+  {customer_id:'A', amount:100},
+  {customer_id:'A', amount:50},
+  {customer_id:'B', amount:200},
+];
+console.log(ltv(customers, sales));`}
+  hints={[
+    'Inicializa todos los customers con 0.',
+    'Acumula amounts.',
+    'Customers sin sales -> 0.',
+  ]}
+  tests={[
+    {
+      description: 'suma sales del customer',
+      assert: 'ltv([{id:"A"}],[{customer_id:"A",amount:100},{customer_id:"A",amount:50}]).A === 150',
+    },
+    {
+      description: 'customer sin sales -> 0',
+      assert: 'ltv([{id:"A"},{id:"B"}],[{customer_id:"A",amount:10}]).B === 0',
+    },
+    {
+      description: 'preserva todos los customers',
+      assert: 'Object.keys(ltv([{id:"A"},{id:"B"},{id:"C"}],[])).length === 3',
+    },
+  ]}
+/>
+
+---
+
+## Mini-proyecto del módulo
+
+<Project
+  id="modeling-module-project"
+  title="Diseña tu data warehouse"
+  description="Toma un sistema OLTP real (un proyecto tuyo o uno open source) y diseña el warehouse analítico correspondiente."
+  xpReward={350}
+  steps={[
+    {
+      id: 's1',
+      title: 'Identifica el sistema source',
+      description: 'Cualquier app con datos: una app personal, un proyecto en GitHub con BD documentada, o el ejemplo Northwind de Microsoft.',
+      successCriteria: 'Tienes diagrama ER del schema OLTP.',
+      resources: [{ label: 'Northwind sample', href: 'https://github.com/Microsoft/sql-server-samples' }],
+    },
+    {
+      id: 's2',
+      title: 'Lista las preguntas analíticas',
+      description: 'Escribe 5 queries que querrías responder. "Ventas por mes y categoría", "Top 10 customers", "Cohort retention".',
+      successCriteria: 'Lista de 5 queries en lenguaje natural.',
+    },
+    {
+      id: 's3',
+      title: 'Diseña los facts',
+      description: 'Para cada pregunta, identifica el evento medible. Casi todas comparten una fact_sales como base.',
+      successCriteria: 'Schema de 1-3 facts con grain explícita.',
+    },
+    {
+      id: 's4',
+      title: 'Diseña las dimensiones',
+      description: 'Customer, Product, Date, Geography... Decide cuáles llevan SCD Type 2.',
+      successCriteria: 'Lista de dims con columnas + tipo SCD por dim.',
+    },
+    {
+      id: 's5',
+      title: 'Diagrama ER del warehouse',
+      description: 'Dibuja el star schema con todas las relaciones. Mermaid o draw.io.',
+      successCriteria: 'Imagen del schema en el README del repo.',
+    },
+    {
+      id: 's6',
+      title: 'Escribe las 5 queries del paso 2 sobre el nuevo schema',
+      description: 'Verifica que el modelo soporte cada pregunta sin volver al OLTP.',
+      successCriteria: '5 queries SQL ejecutables sobre tu schema.',
+    },
+  ]}
+/>
+
+---
+
+¡Felicitaciones por completar el Módulo 3! Próximo: **ETL/ELT y
+orquestación**.

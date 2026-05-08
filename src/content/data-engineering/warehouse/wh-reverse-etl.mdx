@@ -1,0 +1,342 @@
+## Reverse ETL
+
+**Reverse ETL** es el patrón de mover datos **del warehouse hacia
+sistemas operacionales** — el inverso del ETL clásico. Tu CRM,
+herramienta de marketing, o producto necesita los datos transformados
+que viven en el warehouse. Reverse ETL es el puente.
+
+### Por qué existe
+
+ETL tradicional:
+
+```
+Sistemas operacionales → Warehouse → BI / Dashboards
+```
+
+Reverse ETL:
+
+```
+Warehouse → Sistemas operacionales (Salesforce, HubSpot, Intercom, ...)
+```
+
+¿Para qué? **Activación de datos**: los datos que están en el warehouse
+limpios, segmentados, enriquecidos también deberían estar en las
+herramientas que el equipo de marketing/ventas/producto usa día a día.
+
+### Casos de uso
+
+- **Customer 360 → CRM**: warehouse calculó el LTV, churn risk, last
+  order date. Push esos campos a Salesforce para que el equipo de
+  ventas los vea.
+- **Audiencias para marketing**: "usuarios premium con >5 órdenes en
+  los últimos 30 días" → push a HubSpot/Mailchimp para campañas.
+- **Personalization**: features de ML (predicted_category) →
+  Intercom/in-app messaging.
+- **Customer support**: conversation_count, last_purchase →
+  Zendesk/Intercom para que support vea contexto.
+
+### Arquitectura
+
+<Diagram type="mermaid">
+{`flowchart LR
+  S[Sources<br/>app, Stripe, Shopify] --> W[(Warehouse<br/>Snowflake/BQ)]
+  W -->|dbt| M[Marts<br/>customer_360]
+  M -->|Reverse ETL<br/>Hightouch / Census| C[Salesforce]
+  M --> H[HubSpot]
+  M --> I[Intercom]`}
+</Diagram>
+
+El **modelo de datos** vive en el warehouse (single source of truth).
+La sincronización a sistemas externos es una capa adicional, no el
+master data.
+
+### Las herramientas
+
+- **Hightouch**: una de las más usadas. UI para definir audiencias y
+  destinos sin código.
+- **Census**: similar, también muy adoptado.
+- **Polytomic**: orientado a developers.
+- **Reverse ETL custom**: scripts Python con APIs de cada destino. Ok
+  para un destino, pesadilla a escala.
+
+Las managed son la opción default por el costo de mantener
+integraciones a docenas de SaaS.
+
+### Cómo funciona conceptualmente
+
+1. **Defines el modelo en warehouse** (típicamente con dbt):
+   ```sql
+   -- models/marts/customer_enriched.sql
+   SELECT
+     customer_id,
+     email,
+     ltv,
+     churn_risk,
+     last_order_date,
+     segment
+   FROM {{ ref('dim_customer') }}
+   JOIN {{ ref('fct_customer_metrics') }} USING (customer_id);
+   ```
+
+2. **Mapeas a campos del destino** (Salesforce, HubSpot...):
+   - `customer_enriched.email` → `Salesforce.Contact.Email`
+   - `customer_enriched.ltv` → `Salesforce.Contact.LTV__c`
+   - `customer_enriched.segment` → `Salesforce.Contact.Segment__c`
+
+3. **Defines schedule + sync mode**:
+   - **Full sync**: enviar todo cada vez (caro, lento).
+   - **Incremental sync**: solo registros cambiados.
+   - **Mirror sync**: refleja exactamente el estado del warehouse
+     (incluyendo deletes).
+
+4. **El servicio detecta cambios y los empuja vía API** del destino.
+
+### Patrones de sincronización
+
+<AnnotatedCode
+  language="sql"
+  filename="sync-modes.sql"
+  annotations={[
+    {
+      match: 'updated_at',
+      title: 'Tracking column',
+      body: 'La herramienta lee solo filas donde updated_at > último sync. Crítico tener este timestamp confiable.',
+    },
+    {
+      match: 'is_active',
+      title: 'Soft delete',
+      body: 'Mejor que DELETE: marcas inactivos. La herramienta lee el flag y desactiva en el destino sin perder data.',
+    },
+    {
+      match: 'segment_v2',
+      title: 'Versionado de modelo',
+      body: 'Si cambias la lógica de segmentación, crea segment_v2 en paralelo, sincroniza a otro campo, valida, y solo después deprecate.',
+    },
+  ]}
+>
+{`-- Modelo source para reverse ETL
+SELECT
+  customer_id,
+  email,
+  ltv,
+  churn_risk_score,
+  segment_v2,
+  is_active,
+  last_order_date,
+  GREATEST(updated_at, last_order_date) AS updated_at  -- para incremental
+FROM {{ ref('dim_customer') }}
+WHERE is_active = TRUE;`}
+</AnnotatedCode>
+
+### Consideraciones
+
+- **Rate limits del destino**: APIs SaaS típicamente 10-100 req/s.
+  Sincronizar 1M registros toma horas. La herramienta gestiona esto.
+- **Idempotencia**: si una sincronización falla a la mitad, retry sin
+  duplicar. Las managed lo manejan; en custom, debes diseñarlo.
+- **Schema evolution**: agregas un campo nuevo al modelo → necesitas
+  agregarlo en el destino (custom field en Salesforce). Coordina con
+  los equipos owners del destino.
+- **Privacidad**: el destino puede ser una herramienta SaaS de
+  terceros. Asegura que solo envías datos permitidos (no PII a
+  herramientas no autorizadas).
+
+### Cuándo NO usar Reverse ETL
+
+- **Latencia sub-segundo**: reverse ETL es batch (5-60 min típico). Para
+  realtime usa CDC + streaming.
+- **Datos que NO están limpios en warehouse**: no tiene sentido
+  sincronizar basura.
+- **El destino ya recibe los datos directamente**: por ejemplo, Stripe
+  ya tiene tu data de pagos — no se la mandes desde el warehouse.
+
+### Errores comunes
+
+- **Sincronizar mucho, mucho más de lo necesario**: rate limits, costo
+  alto. Filtra por audiencia.
+- **Sin tracking column**: full sync cada vez = ineficiente.
+- **Owner ambiguo**: cuando el campo en Salesforce está mal, ¿quién lo
+  arregla — analytics o sales ops? Define quién es source of truth.
+- **Sync schedule muy frecuente**: cada 5 min cuando los datos
+  cambian cada hora = waste.
+
+### Para seguir aprendiendo
+
+- [Hightouch — what is reverse ETL](https://hightouch.com/blog/reverse-etl)
+- [Census docs](https://docs.getcensus.com/)
+- [The Modern Data Stack — reverse ETL](https://www.moderndatastack.xyz/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="wh-reverse-etl-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Reverse ETL mueve datos:',
+      options: [
+        'De warehouse a warehouse',
+        'De source a warehouse',
+        'De warehouse a sistemas operacionales (CRM, marketing, etc.)',
+        'No mueve datos',
+      ],
+      correctIndex: 2,
+      explanation: 'Activa los datos del warehouse en herramientas operacionales.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'El warehouse sigue siendo la source of truth en Reverse ETL.',
+      correct: true,
+      explanation: 'El destino recibe una copia derivada; warehouse manda.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Caso de uso típico:',
+      options: [
+        'Cargar datos de Stripe a warehouse',
+        'Push customer LTV calculado en warehouse hacia Salesforce',
+        'Reemplazar Airflow',
+        'Migrar a otro warehouse',
+      ],
+      correctIndex: 1,
+      explanation: 'Activa data warehouse en CRM operacional.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Para incremental sync necesitas una columna ___ en el modelo source.',
+      template: '___',
+      answer: 'updated_at',
+      caseSensitive: false,
+      explanation: 'Sirve para "envíame solo lo cambiado desde último sync".',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Cuándo NO conviene Reverse ETL:',
+      options: [
+        'Cuando hay sales ops',
+        'Cuando necesitas latencia sub-segundo (es batch, 5-60 min)',
+        'Cuando usas dbt',
+        'En multi-cloud',
+      ],
+      correctIndex: 1,
+      explanation: 'Para realtime usa CDC + streaming.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="wh-reverse-etl-exercise"
+  title="Mapper de campos"
+  description="Implementa `mapFields(rows, mapping)` donde rows es array de objetos y mapping un objeto { sourceField: destField }. Devuelve array transformado."
+  language="javascript"
+  starterCode={`function mapFields(rows, mapping) {
+  return [];
+}
+
+const rows = [{ customer_id: 1, ltv: 100 }];
+const mapping = { customer_id: 'Id', ltv: 'LTV__c' };
+console.log(mapFields(rows, mapping));
+// [{ Id: 1, LTV__c: 100 }]`}
+  solution={`function mapFields(rows, mapping) {
+  return rows.map(r => {
+    const out = {};
+    for (const [src, dest] of Object.entries(mapping)) {
+      if (src in r) out[dest] = r[src];
+    }
+    return out;
+  });
+}
+const rows = [{ customer_id: 1, ltv: 100 }];
+const mapping = { customer_id: 'Id', ltv: 'LTV__c' };
+console.log(mapFields(rows, mapping));`}
+  hints={[
+    'map cada row, construye un nuevo objeto con las claves renombradas.',
+  ]}
+  tests={[
+    {
+      description: 'rename simple',
+      assert: 'JSON.stringify(mapFields([{a:1}],{a:"X"})) === \\\'[{"X":1}]\\\'',
+    },
+    {
+      description: 'campos sin mapping se ignoran',
+      assert: 'Object.keys(mapFields([{a:1,b:2}],{a:"X"})[0]).join(",") === "X"',
+    },
+    {
+      description: 'array vacío',
+      assert: 'mapFields([],{a:"X"}).length === 0',
+    },
+  ]}
+/>
+
+---
+
+## Mini-proyecto del módulo
+
+<Project
+  id="wh-module-project"
+  title="Warehouse end-to-end con dbt + cost monitoring"
+  description="Construye un warehouse productivo en BigQuery o Snowflake con particionamiento, dbt, monitoreo de costos."
+  xpReward={400}
+  steps={[
+    {
+      id: 's1',
+      title: 'Setup en BigQuery free tier o Snowflake trial',
+      description: 'Crea proyecto/cuenta, dataset/database, configura dbt con conexión.',
+      successCriteria: 'dbt debug pasa.',
+    },
+    {
+      id: 's2',
+      title: 'Carga dataset público o sintético',
+      description: 'BQ public datasets (NYC taxi, GitHub) o genera tu propio Parquet con Python y carga.',
+      successCriteria: 'Tabla raw con >100k filas.',
+    },
+    {
+      id: 's3',
+      title: 'Particionamiento + clustering',
+      description: 'Crea tabla particionada por DATE(timestamp) y clusterizada por user/category.',
+      successCriteria: 'Query con WHERE date BETWEEN escanea <10% del total.',
+    },
+    {
+      id: 's4',
+      title: 'Modelos dbt: staging + marts',
+      description: 'stg_*, fct_*, dim_*. Materializaciones apropiadas (view para staging, table o incremental para marts).',
+      successCriteria: 'dbt build OK con 0 fallos.',
+    },
+    {
+      id: 's5',
+      title: 'Materialized view o agregado pre-computado',
+      description: 'Identifica una query analítica frecuente, materialízala como tabla incremental.',
+      successCriteria: 'La query sobre el agregado es ≥10× más rápida que la original.',
+    },
+    {
+      id: 's6',
+      title: 'Cost monitoring',
+      description: 'Query INFORMATION_SCHEMA.JOBS o WAREHOUSE_METERING_HISTORY. Documenta top 5 queries más caras.',
+      successCriteria: 'Reporte con costos por query/usuario.',
+    },
+    {
+      id: 's7',
+      title: 'Alert de costo',
+      description: 'BQ: cuota diaria de bytes. Snowflake: Resource Monitor. Threshold notify a 75%.',
+      successCriteria: 'Configurado y verificado (intencionalmente excede para ver alert).',
+    },
+  ]}
+/>
+
+---
+
+¡Felicidades, completaste el Módulo 5! Próximo (Fase 6.3): **Big Data
+con Spark + Kafka**.

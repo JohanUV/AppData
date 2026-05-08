@@ -1,0 +1,310 @@
+## Testing de pipelines con pytest
+
+Un pipeline sin tests es una bomba de tiempo. Los datos cambian; las
+APIs cambian; tu refactor de "una línea inocente" rompe el dashboard
+del CFO. Tests unitarios + integración son la diferencia entre un
+pipeline que funciona los lunes y uno que funciona siempre.
+
+### pytest en 60 segundos
+
+```python
+# test_transforms.py
+def add(a, b):
+    return a + b
+
+def test_add():
+    assert add(2, 3) == 5
+
+def test_add_negative():
+    assert add(-1, 1) == 0
+```
+
+```bash
+pytest                  # corre todo
+pytest test_xx.py        # un archivo
+pytest -k "negative"     # solo tests cuyo nombre matchea
+pytest -v                # verbose
+pytest --cov=src         # con cobertura
+```
+
+Convención: archivos `test_*.py`, funciones `def test_*`. pytest los
+descubre automáticamente.
+
+### Fixtures: setup/teardown reutilizable
+
+<AnnotatedCode
+  language="python"
+  filename="conftest.py"
+  annotations={[
+    {
+      match: '@pytest.fixture',
+      title: 'Decorador',
+      body: 'Convierte la función en un fixture: pytest la ejecuta antes de cada test que la pida como parámetro.',
+    },
+    {
+      match: 'scope=\'session\'',
+      title: 'Lifetime del fixture',
+      body: 'function (default): por test. session: una vez por toda la corrida. Útil para cosas caras como conexiones DB.',
+    },
+    {
+      match: 'yield',
+      title: 'Setup + teardown',
+      body: 'Lo que precede a yield es setup; lo que sigue es teardown (corre incluso si el test falla).',
+    },
+    {
+      match: 'tmp_path',
+      title: 'Fixture built-in',
+      body: 'pytest provee fixtures gratis: tmp_path da un directorio temporal único por test.',
+    },
+  ]}
+>
+{`# conftest.py — fixtures compartidas
+import pytest
+import pandas as pd
+
+@pytest.fixture(scope='session')
+def sample_df():
+    return pd.DataFrame({
+        'user_id': [1, 2, 3],
+        'amount': [100, 50, 200],
+    })
+
+@pytest.fixture
+def temp_csv(tmp_path):
+    path = tmp_path / 'data.csv'
+    yield path
+    # teardown automático: tmp_path se borra solo
+
+# test_pipeline.py
+def test_total(sample_df):
+    assert sample_df['amount'].sum() == 350`}
+</AnnotatedCode>
+
+### Parametrize: muchos casos sin repetir
+
+```python
+import pytest
+
+@pytest.mark.parametrize('amount,bucket', [
+    (5, 'small'),
+    (50, 'medium'),
+    (500, 'large'),
+    (5000, 'huge'),
+])
+def test_bucketize(amount, bucket):
+    assert bucketize(amount) == bucket
+```
+
+Un solo test definicional, 4 casos. Si uno falla, pytest te dice
+exactamente cuál.
+
+### Mocks para llamadas externas
+
+Los pipelines llaman APIs, BDs, S3. En tests no quieres tocar
+producción:
+
+```python
+from unittest.mock import patch, Mock
+
+def fetch_orders(api_url):
+    return requests.get(api_url).json()
+
+def test_fetch_orders():
+    with patch('requests.get') as mock_get:
+        mock_get.return_value.json.return_value = [{'id': 1}]
+        result = fetch_orders('http://api')
+        assert result == [{'id': 1}]
+        mock_get.assert_called_once_with('http://api')
+```
+
+`patch` reemplaza `requests.get` con un mock dentro del bloque. Puedes
+verificar qué se llamó y con qué args.
+
+### Tests de DataFrames
+
+Pandas trae helpers:
+
+```python
+import pandas as pd
+from pandas.testing import assert_frame_equal
+
+def test_transform():
+    inp = pd.DataFrame({'a': [1, 2]})
+    expected = pd.DataFrame({'a': [1, 2], 'a_doubled': [2, 4]})
+    out = transform(inp)
+    assert_frame_equal(out, expected)
+```
+
+`assert_frame_equal` compara columnas, tipos y valores. Te da un diff
+útil cuando no coinciden.
+
+### Test pyramide para pipelines
+
+<Diagram type="mermaid">
+{`flowchart TB
+  A[Tests E2E<br/>pocos, lentos<br/>pipeline completo<br/>con fixtures]
+  B[Tests de integración<br/>algunos<br/>componentes hablando<br/>BD/API reales]
+  C[Tests unitarios<br/>muchos, rápidos<br/>funciones puras]
+  C --> B --> A`}
+</Diagram>
+
+- **Unitarios** (80%): funciones de transformación puras (map de
+  columnas, parsers). Sub-segundo, sin red ni disco.
+- **Integración** (15%): código que toca BD/API/storage. Usa BD local
+  (Postgres en docker-compose) o LocalStack para AWS.
+- **E2E** (5%): correr el pipeline completo con datos sintéticos.
+
+### Tests de calidad de datos: Great Expectations
+
+Para validar **datos** (no código), librerías especializadas:
+
+```python
+import great_expectations as ge
+
+df_ge = ge.from_pandas(df)
+df_ge.expect_column_to_exist('user_id')
+df_ge.expect_column_values_to_not_be_null('user_id')
+df_ge.expect_column_values_to_be_between('amount', min_value=0, max_value=10_000)
+```
+
+Lo corres en producción como un step más del pipeline: si los datos
+violan expectativas, el pipeline falla y suena la alarma.
+
+### Errores comunes
+
+- **No tener tests**. La excusa "es un pipeline, no un app" no vale.
+- **Solo tests E2E**: cuando algo falla, no sabes qué fue. Combina
+  niveles.
+- **Tests que tocan producción**. Aislalos con mocks o test envs.
+- **`assert df.shape == (10, 5)`** sin chequear contenido. Forma
+  correcta + datos basura = test verde con datos malos.
+- **Mocks que mienten**: validar que `mock.return_value` refleje
+  realmente lo que la API devuelve. Si la API cambia, tu test no
+  detecta el cambio.
+
+### Para seguir aprendiendo
+
+- [pytest docs](https://docs.pytest.org/)
+- [Testing data pipelines — Datafold](https://www.datafold.com/blog)
+- [Great Expectations](https://greatexpectations.io/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="python-testing-quiz"
+  xpReward={60}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Qué es un fixture en pytest?',
+      options: [
+        'Un assert raro',
+        'Una función decorada que prepara estado y se inyecta como parámetro a tests',
+        'Un mock',
+        'Un archivo de config',
+      ],
+      correctIndex: 1,
+      explanation: 'Setup reutilizable, con scope (function/class/module/session) y teardown via yield.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '¿Cuándo usar `parametrize`?',
+      options: [
+        'Para configurar pytest',
+        'Para correr el mismo test con varios sets de inputs/outputs sin repetir código',
+        'Para mocks',
+        'Para fixtures',
+      ],
+      correctIndex: 1,
+      explanation: 'Decorador @pytest.mark.parametrize.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Tests unitarios deben ser sub-segundo y no tocar BD/red.',
+      correct: true,
+      explanation: 'Si tocan recursos externos, son integración o E2E.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Helper para comparar DataFrames.',
+      template: 'from pandas.testing import ___',
+      answer: 'assert_frame_equal',
+      caseSensitive: false,
+      explanation: 'assert_frame_equal compara tipos y valores con diff legible.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Un test que valida shape pero no valores...',
+      options: [
+        'Es suficiente',
+        'Pasa con datos basura: necesita asserts sobre contenido también',
+        'Es lo recomendado',
+        'No se puede',
+      ],
+      correctIndex: 1,
+      explanation: 'Un test que solo valida forma deja pasar bugs de contenido.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="python-testing-exercise"
+  title="Mock simple"
+  description="Implementa `withMock(originalFn, mockFn, callback)` que ejecuta callback con originalFn temporalmente reemplazado por mockFn, y restaura al final. Devuelve el resultado de callback."
+  language="javascript"
+  starterCode={`function withMock(target, key, mockFn, callback) {
+  return null;
+}
+
+const obj = { fetch: () => 'real' };
+const result = withMock(obj, 'fetch', () => 'mocked', () => obj.fetch());
+console.log(result);  // 'mocked'
+console.log(obj.fetch());  // 'real' — restaurado`}
+  solution={`function withMock(target, key, mockFn, callback) {
+  const original = target[key];
+  target[key] = mockFn;
+  try {
+    return callback();
+  } finally {
+    target[key] = original;
+  }
+}
+const obj = { fetch: () => 'real' };
+const result = withMock(obj, 'fetch', () => 'mocked', () => obj.fetch());
+console.log(result);
+console.log(obj.fetch());`}
+  hints={[
+    'Guarda el original, reemplaza, ejecuta, restaura.',
+    'try/finally para que el restore corra incluso con error.',
+  ]}
+  tests={[
+    {
+      description: 'el mock se ejecuta',
+      assert: 'withMock({f:()=>1},"f",()=>2,(o)=>1) === 1',
+    },
+    {
+      description: 'restaura el original',
+      assert: '(()=>{const o={f:()=>1}; withMock(o,"f",()=>2,()=>{}); return o.f()})() === 1',
+    },
+    {
+      description: 'restaura incluso con error',
+      assert: '(()=>{const o={f:()=>1}; try{withMock(o,"f",()=>2,()=>{throw new Error()})}catch{} return o.f()})() === 1',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **entornos virtuales y dependencias**.

@@ -1,0 +1,309 @@
+## Operadores y sensores
+
+Un **operador** define **qué hace** una tarea (correr Python,
+ejecutar SQL, mover S3 → S3, etc). Un **sensor** es un operador
+especial que **espera** a que algo ocurra (un archivo aparezca,
+una hora llegue, otro DAG termine).
+
+Conocer los operadores correctos te ahorra escribir Python para todo.
+
+### Operadores built-in más usados
+
+```python
+from airflow.operators.python import PythonOperator
+from airflow.operators.bash import BashOperator
+from airflow.operators.empty import EmptyOperator   # antes "Dummy"
+
+# Para BD/Warehouse
+from airflow.providers.postgres.operators.postgres import PostgresOperator
+from airflow.providers.snowflake.operators.snowflake import SnowflakeOperator
+from airflow.providers.google.cloud.operators.bigquery import BigQueryExecuteQueryOperator
+
+# Para nubes
+from airflow.providers.amazon.aws.operators.s3 import S3CreateObjectOperator
+from airflow.providers.amazon.aws.transfers.s3_to_redshift import S3ToRedshiftOperator
+```
+
+### PythonOperator: el comodín
+
+```python
+def my_task(**context):
+    print('processing...')
+    return 'done'
+
+task = PythonOperator(
+    task_id='my_task',
+    python_callable=my_task,
+    op_kwargs={'param1': 'value'},   # se inyectan como kwargs
+    op_args=['positional1'],
+)
+```
+
+Ojo con tareas pesadas: el worker la ejecuta. Para procesamiento real,
+delegar a un sistema (BigQuery, Spark) y solo orquestar desde Airflow.
+
+### BashOperator y SQL operators
+
+```python
+extract = BashOperator(
+    task_id='extract',
+    bash_command='python /opt/scripts/extract.py --date {{ ds }}',
+)
+
+transform = PostgresOperator(
+    task_id='transform',
+    postgres_conn_id='warehouse_pg',
+    sql='/sql/transform.sql',         # path relativo al DAGs folder
+    parameters={'date': '{{ ds }}'},
+)
+```
+
+`postgres_conn_id` apunta a una **Connection** definida en la UI de
+Airflow (Admin → Connections). No hardcodees credenciales en el DAG.
+
+### TaskFlow API: la forma moderna
+
+Desde Airflow 2.0:
+
+<AnnotatedCode
+  language="python"
+  filename="taskflow.py"
+  annotations={[
+    {
+      match: '@task',
+      title: 'Decorador',
+      body: 'Convierte una función Python en una task. El return value queda automáticamente en XCom; los args en otras @task se conectan en serie.',
+    },
+    {
+      match: 'records = extract()',
+      title: 'Encadenamiento natural',
+      body: 'En lugar de >> manual, llamas funciones como Python normal. Airflow infiere las dependencias y armado del grafo.',
+    },
+    {
+      match: '@dag',
+      title: 'DAG como decorador',
+      body: 'Más limpio que el "with DAG()". El return de la función decorada es el DAG.',
+    },
+  ]}
+>
+{`from airflow.decorators import dag, task
+from datetime import datetime
+
+@dag(schedule='@daily', start_date=datetime(2026, 1, 1), catchup=False)
+def revenue_pipeline():
+
+    @task
+    def extract():
+        return [{'id': 1, 'amount': 100}]
+
+    @task
+    def transform(records):
+        return sum(r['amount'] for r in records)
+
+    @task
+    def load(total):
+        print(f'Loading total: {total}')
+
+    records = extract()
+    total = transform(records)
+    load(total)
+
+revenue_pipeline()`}
+</AnnotatedCode>
+
+Para nuevos DAGs, **TaskFlow es preferida**. Más Pythonic, menos
+boilerplate.
+
+### Sensores
+
+Un sensor "duerme" hasta que una condición se cumple. Útil para esperar
+archivos, particiones, horas externas.
+
+```python
+from airflow.providers.amazon.aws.sensors.s3 import S3KeySensor
+from airflow.sensors.time_sensor import TimeSensor
+from airflow.sensors.external_task import ExternalTaskSensor
+
+wait_for_file = S3KeySensor(
+    task_id='wait_for_file',
+    bucket_name='raw-data',
+    bucket_key='orders/{{ ds }}/data.parquet',
+    poke_interval=60,                # cada 60s
+    timeout=60 * 60 * 4,              # max 4 horas
+    mode='reschedule',                # crítico (ver abajo)
+)
+
+wait_for_upstream_dag = ExternalTaskSensor(
+    task_id='wait_for_extract_dag',
+    external_dag_id='extract_orders',
+    external_task_id='final_task',
+    mode='reschedule',
+)
+```
+
+### Modes: poke vs reschedule
+
+- **`poke`** (default): la tarea ocupa un slot del worker mientras
+  espera. Si esperas 4 horas, gastas un slot todo ese tiempo.
+- **`reschedule`**: el sensor revisa, si no cumple suelta el slot y
+  vuelve a programarse en `poke_interval`.
+
+Para esperas largas (>5 minutos), **siempre `reschedule`**. Sino te
+quedas sin slots y todo el cluster se traba.
+
+### Evita el anti-patrón: muchos sensores en cascada
+
+Si tu DAG tiene 5 sensores en serie esperando 4 horas cada uno,
+estás haciendo algo mal. Considera:
+
+- **Trigger basado en eventos** (Lambda → API call para trigger DAG).
+- **Datasets de Airflow** (Airflow 2.4+): producer/consumer pattern,
+  un DAG dispara otro al producir datos.
+
+```python
+from airflow.datasets import Dataset
+
+orders_dataset = Dataset('s3://raw/orders/')
+
+# DAG productor
+@task(outlets=[orders_dataset])
+def extract():
+    ...
+
+# DAG consumidor
+@dag(schedule=[orders_dataset], ...)
+def transform_pipeline():
+    ...
+```
+
+### Operadores que vale la pena conocer
+
+- `EmptyOperator`: placeholder, no hace nada (útil como "barrier").
+- `BranchPythonOperator`: ejecuta una de varias ramas según lógica.
+- `KubernetesPodOperator`: ejecuta un container en K8s.
+- `EmailOperator`: manda email.
+- `TriggerDagRunOperator`: dispara otro DAG.
+- `*ToS3*Operator` y `S3To*Operator`: cientos de transfers para
+  todos los stacks.
+
+Más en [Airflow Providers Index](https://airflow.apache.org/docs/).
+
+### Errores comunes
+
+- **PythonOperator con código que mejor delega a otro sistema**: si
+  hace 10 GB de transformación, sufre el worker. Delega a Spark/BigQuery.
+- **Sensor en mode poke con timeout largo**: bloqueo de slots.
+- **No usar Connections**: credenciales en el código → leak.
+- **Templates Jinja en argumentos no template-able**: solo ciertos
+  fields aceptan templates (mira la doc del operator).
+- **Mezclar TaskFlow y operators clásicos sin razón**: confunde al
+  lector.
+
+### Para seguir aprendiendo
+
+- [Airflow operators reference](https://airflow.apache.org/docs/apache-airflow/stable/_api/airflow/operators/index.html)
+- [TaskFlow tutorial](https://airflow.apache.org/docs/apache-airflow/stable/tutorial/taskflow.html)
+- [Datasets and Data-aware Scheduling](https://airflow.apache.org/docs/apache-airflow/stable/concepts/datasets.html)
+
+---
+
+## Quiz
+
+<Quiz
+  id="etl-operators-sensors-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Diferencia entre operador y sensor?',
+      options: [
+        'Son sinónimos',
+        'Operador hace una acción; sensor espera a que una condición se cumpla',
+        'Sensor es solo para AWS',
+        'Operador es deprecado',
+      ],
+      correctIndex: 1,
+      explanation: 'Sensor = forma especializada de operador para "esperar".',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '¿Por qué `mode=reschedule` para un sensor con timeout 4 horas?',
+      options: [
+        'Es más rápido',
+        'No bloquea slot del worker mientras espera; libera y reprograma',
+        'Es obligatorio en Airflow 2',
+        'Da retries automáticos',
+      ],
+      correctIndex: 1,
+      explanation: 'poke ocupa slot; reschedule lo libera entre pokes.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'TaskFlow API (con @task) permite encadenar tareas como llamadas Python normales.',
+      correct: true,
+      explanation: 'Airflow infiere dependencias del DAG por orden de llamadas.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Operador para correr Python:',
+      template: '___Operator',
+      answer: 'Python',
+      caseSensitive: true,
+      explanation: 'PythonOperator.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Anti-patrón con sensores:',
+      options: [
+        'Usar timeout',
+        'Cinco sensores en cascada esperando horas — usa Datasets o triggers',
+        'Usar mode=reschedule',
+        'Sensor de S3',
+      ],
+      correctIndex: 1,
+      explanation: 'Datasets / event triggers escalan mejor.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="etl-operators-exercise"
+  title="Detector de tareas que deberían usar reschedule"
+  description="Implementa `shouldUseReschedule(timeoutSec)` que devuelve true si el timeout es >= 5 minutos (300s)."
+  language="javascript"
+  starterCode={`function shouldUseReschedule(timeoutSec) {
+  return false;
+}
+
+console.log(shouldUseReschedule(60));      // false
+console.log(shouldUseReschedule(600));     // true
+console.log(shouldUseReschedule(300));     // true`}
+  solution={`function shouldUseReschedule(timeoutSec) {
+  return timeoutSec >= 300;
+}
+console.log(shouldUseReschedule(60));
+console.log(shouldUseReschedule(600));
+console.log(shouldUseReschedule(300));`}
+  hints={[
+    'Threshold: 300 segundos = 5 minutos.',
+  ]}
+  tests={[
+    { description: 'corto', assert: 'shouldUseReschedule(60) === false' },
+    { description: 'exactamente 5min', assert: 'shouldUseReschedule(300) === true' },
+    { description: 'largo', assert: 'shouldUseReschedule(7200) === true' },
+  ]}
+/>
+
+---
+
+Próxima lección: **XComs y dependencias**.

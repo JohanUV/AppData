@@ -1,0 +1,314 @@
+## Slowly Changing Dimensions (SCD)
+
+Las **Slowly Changing Dimensions** son el patrón para manejar dims
+cuyos atributos cambian con el tiempo. Un cliente se muda de país, un
+producto cambia de categoría, un empleado cambia de manager. ¿Pierdes
+la historia? ¿La preservas? La respuesta no es siempre la misma — y
+hay 6 "tipos" de SCD que cubren los casos.
+
+### El problema
+
+Tabla `dim_customer`:
+
+```
+customer_key | customer_id | name | country
+1            | C-100       | Ana  | CO
+```
+
+Hoy, Ana se muda de Colombia a México. ¿Qué haces?
+
+- Si actualizas el row → pierdes que Ana **vivía** en CO cuando hizo
+  sus ventas pasadas. Reportes históricos de "ventas en CO" cambian
+  retroactivamente. Mal.
+- Si insertas otro row → tienes dos "Ana" — los joins con `fact_sales`
+  hay que pensar cuál usar.
+
+Los tipos SCD codifican estas decisiones.
+
+### SCD Type 1: sobrescribir (no preservar historia)
+
+```sql
+-- Ana se mudó:
+UPDATE dim_customer SET country = 'MX' WHERE customer_key = 1;
+```
+
+- Simple.
+- **Pierdes historia**: las ventas pasadas de Ana en CO ahora "son" en MX.
+- **Cuándo usar**: corrección de errores (typo en nombre); atributos
+  donde la historia no importa.
+
+### SCD Type 2: agregar nueva versión (preservar historia)
+
+<AnnotatedCode
+  language="sql"
+  filename="scd2.sql"
+  annotations={[
+    {
+      match: 'effective_from',
+      title: 'Inicio de validez',
+      body: 'Desde qué fecha esta versión del cliente fue verdad.',
+    },
+    {
+      match: 'effective_to',
+      title: 'Fin de validez',
+      body: 'Hasta cuándo. NULL o 9999-12-31 indica versión actual.',
+    },
+    {
+      match: 'is_current',
+      title: 'Bandera de versión actual',
+      body: 'Booleana redundante con effective_to IS NULL pero acelera filtros: WHERE is_current = TRUE.',
+    },
+    {
+      match: 'customer_key',
+      title: 'Surrogate key cambia',
+      body: 'Cada versión es un surrogate distinto. fact_sales referencia el surrogate VIGENTE en la fecha de la venta.',
+    },
+  ]}
+>
+{`-- Schema
+CREATE TABLE dim_customer (
+  customer_key   BIGINT PRIMARY KEY,   -- surrogate, distinto por versión
+  customer_id    VARCHAR(50),           -- business id, mismo para todas las versiones
+  name           VARCHAR(200),
+  country        VARCHAR(100),
+  effective_from DATE,
+  effective_to   DATE,
+  is_current     BOOLEAN
+);
+
+-- Antes:
+-- 1 | C-100 | Ana | CO | 2023-01-01 | NULL       | TRUE
+
+-- Ana se mudó el 2026-05-15:
+UPDATE dim_customer
+SET effective_to = '2026-05-14', is_current = FALSE
+WHERE customer_key = 1;
+
+INSERT INTO dim_customer VALUES
+(2, 'C-100', 'Ana', 'MX', '2026-05-15', NULL, TRUE);
+
+-- Resultado:
+-- 1 | C-100 | Ana | CO | 2023-01-01 | 2026-05-14 | FALSE
+-- 2 | C-100 | Ana | MX | 2026-05-15 | NULL       | TRUE`}
+</AnnotatedCode>
+
+Ventas previas referencian `customer_key = 1` (Ana en CO). Ventas
+nuevas referencian `customer_key = 2` (Ana en MX). Reportes históricos
+preservan la realidad de cada momento.
+
+**Cuándo usar:** lo más común para dims importantes (customers,
+products, employees, stores). Es lo que la industria entiende por
+"SCD".
+
+### SCD Type 3: columna histórica anterior
+
+```sql
+ALTER TABLE dim_customer ADD COLUMN previous_country VARCHAR(100);
+
+-- Cambio:
+UPDATE dim_customer
+SET previous_country = country, country = 'MX'
+WHERE customer_key = 1;
+```
+
+Solo guardas **un** valor anterior. Útil si quieres "ventas del
+cliente que estaba en X país antes" sin proliferar versiones. Limitación
+obvia: no puedes ir más atrás que un cambio.
+
+**Cuándo usar:** raro. Casi siempre Type 2 es mejor.
+
+### SCD Type 4: tabla histórica separada
+
+```sql
+-- Tabla actual (siempre el latest)
+dim_customer (customer_key, name, country, ...)
+
+-- Tabla historial (cambios pasados)
+dim_customer_history (customer_key, name, country, valid_from, valid_to)
+```
+
+Type 4 es Type 1 + tabla aparte para historia. Las queries OLAP
+estándar usan la tabla actual; queries de auditoría van a la
+historial.
+
+**Cuándo usar:** dim muy grande donde Type 2 saturaría con versiones,
+y cuando el 95% de queries no necesitan historia.
+
+### Type 6: combo 1+2+3
+
+Type 2 (versionado) + columna `current_country` (Type 1 reescrito en
+todas las filas) + columna `original_country` (Type 3). Lo mejor de
+todos: query histórico + query "como es ahora" + query "como empezó".
+
+Costo: complejidad del ETL. Se usa cuando los analistas piden ambas
+visiones a menudo.
+
+### Cómo lo implementa dbt
+
+```sql
+-- snapshots/customers.sql
+{{
+  config(
+    target_schema='snapshots',
+    unique_key='customer_id',
+    strategy='timestamp',
+    updated_at='updated_at',
+  )
+}}
+SELECT * FROM {{ source('app', 'customers') }}
+```
+
+dbt detecta cambios automáticamente y mantiene Type 2 con columnas
+`dbt_valid_from`, `dbt_valid_to`. Lección de dbt en módulo ETL.
+
+### Errores comunes
+
+- **Type 1 cuando deberías Type 2**: pierdes historia para siempre.
+- **Type 2 cuando Type 1 basta**: tabla infla con versiones inútiles
+  (corrección de typo no necesita versionado).
+- **Olvidar `effective_to` o `is_current`**: queries históricas
+  rompen.
+- **Joinear fact con dim por business_id**: usa el surrogate key
+  vigente al momento del hecho.
+- **No tener fecha del cambio en la fuente**: sin updated_at no puedes
+  detectar cuándo cambió un atributo.
+
+### Para seguir aprendiendo
+
+- [Kimball — SCD techniques](https://www.kimballgroup.com/2008/08/slowly-changing-dimensions/)
+- [dbt snapshots](https://docs.getdbt.com/docs/build/snapshots)
+
+---
+
+## Quiz
+
+<Quiz
+  id="modeling-scd-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Qué hace SCD Type 2?',
+      options: [
+        'Sobrescribe el atributo',
+        'Crea una nueva fila por cada cambio, manteniendo historial completo',
+        'No hace nada',
+        'Borra el cliente',
+      ],
+      correctIndex: 1,
+      explanation: 'Cada versión = un surrogate key distinto + effective_from/to.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'SCD Type 1 preserva la historia de cambios.',
+      correct: false,
+      explanation: 'Type 1 sobrescribe — no preserva nada.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: '¿Qué columnas distinguen SCD Type 2?',
+      options: [
+        'created_at',
+        'effective_from, effective_to, is_current',
+        'updated_by',
+        'audit_log',
+      ],
+      correctIndex: 1,
+      explanation: 'El trío clave para versionado.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Para SCD Type 2, fact_sales debe referenciar al ___ key vigente en el momento de la venta.',
+      template: '___',
+      answer: 'surrogate',
+      caseSensitive: false,
+      explanation: 'Cada versión tiene un surrogate distinto.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Cuándo usar Type 1 está bien?',
+      options: [
+        'Para customers que se mudan',
+        'Para corregir un typo en el nombre — no necesitas guardar el typo',
+        'Nunca',
+        'Para products que cambian de categoría',
+      ],
+      correctIndex: 1,
+      explanation: 'Type 1: cuando la historia del valor anterior no aporta nada.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="modeling-scd-exercise"
+  title="Aplicar Type 2"
+  description="Implementa `applyScd2(rows, change)` que recibe un array de versiones (cada una con effective_to) y un objeto change { customer_id, new_country, effective_from }, y devuelve un nuevo array con la versión actual cerrada y la nueva agregada."
+  language="javascript"
+  starterCode={`function applyScd2(rows, change) {
+  return rows;
+}
+
+const rows = [
+  { customer_key:1, customer_id:'A', country:'CO', effective_from:'2023-01-01', effective_to:null, is_current:true },
+];
+const change = { customer_id:'A', new_country:'MX', effective_from:'2026-05-15' };
+console.log(applyScd2(rows, change));`}
+  solution={`function applyScd2(rows, change) {
+  const out = rows.map(r => {
+    if (r.customer_id === change.customer_id && r.is_current) {
+      const dt = new Date(change.effective_from);
+      dt.setDate(dt.getDate() - 1);
+      const close = dt.toISOString().slice(0,10);
+      return { ...r, effective_to: close, is_current: false };
+    }
+    return r;
+  });
+  const maxKey = Math.max(...rows.map(r => r.customer_key));
+  out.push({
+    customer_key: maxKey + 1,
+    customer_id: change.customer_id,
+    country: change.new_country,
+    effective_from: change.effective_from,
+    effective_to: null,
+    is_current: true,
+  });
+  return out;
+}
+const rows = [
+  { customer_key:1, customer_id:'A', country:'CO', effective_from:'2023-01-01', effective_to:null, is_current:true },
+];
+const change = { customer_id:'A', new_country:'MX', effective_from:'2026-05-15' };
+console.log(applyScd2(rows, change));`}
+  hints={[
+    'Cierra la versión actual: marca is_current=false y effective_to = effective_from - 1.',
+    'Inserta una nueva versión con surrogate key incrementado.',
+  ]}
+  tests={[
+    {
+      description: 'cierra la versión anterior',
+      assert: 'applyScd2([{customer_key:1,customer_id:"A",country:"CO",effective_from:"2023-01-01",effective_to:null,is_current:true}],{customer_id:"A",new_country:"MX",effective_from:"2026-05-15"}).find(r=>r.customer_key===1).is_current === false',
+    },
+    {
+      description: 'agrega nueva versión',
+      assert: 'applyScd2([{customer_key:1,customer_id:"A",country:"CO",effective_from:"2023-01-01",effective_to:null,is_current:true}],{customer_id:"A",new_country:"MX",effective_from:"2026-05-15"}).length === 2',
+    },
+    {
+      description: 'la nueva tiene el nuevo país',
+      assert: 'applyScd2([{customer_key:1,customer_id:"A",country:"CO",effective_from:"2023-01-01",effective_to:null,is_current:true}],{customer_id:"A",new_country:"MX",effective_from:"2026-05-15"}).find(r=>r.is_current).country === "MX"',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **caso práctico — modelar un e-commerce**.

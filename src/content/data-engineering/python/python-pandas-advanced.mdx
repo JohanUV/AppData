@@ -1,0 +1,297 @@
+## Pandas avanzado: merge, pivot, groupby
+
+La lección anterior cubrió los basics. Ahora viene la parte que de verdad
+te hace productivo en transformaciones: **groupby** para agregar,
+**merge** para joinear, y **pivot** para reorganizar.
+
+### groupby: el equivalente a GROUP BY de SQL
+
+```python
+import pandas as pd
+df = pd.read_parquet('payments.parquet')
+
+# Una agregación
+df.groupby('country')['amount'].sum()
+
+# Varias agregaciones a la vez
+df.groupby('country').agg(
+    revenue=('amount', 'sum'),
+    n_orders=('amount', 'count'),
+    avg_ticket=('amount', 'mean'),
+)
+
+# Con varias columnas de grupo
+df.groupby(['country', 'month']).agg({
+    'amount': ['sum', 'mean'],
+    'user_id': 'nunique',
+})
+```
+
+Esa segunda forma con `('col', 'fn')` (named aggregation) es la
+recomendada — produce DataFrames con columnas planas y nombres claros.
+
+```python
+# Reset del index para que el grupo sea una columna normal
+result = (
+    df.groupby('country')
+      .agg(revenue=('amount', 'sum'))
+      .reset_index()
+)
+```
+
+### Filtros sobre grupos
+
+```python
+# Países con más de 100 órdenes (HAVING en SQL)
+order_counts = df.groupby('country').size()
+big_countries = order_counts[order_counts > 100].index
+df_big = df[df['country'].isin(big_countries)]
+```
+
+O con `filter`:
+
+```python
+df.groupby('country').filter(lambda g: len(g) > 100)
+```
+
+### merge: JOINs en Pandas
+
+```python
+users = pd.DataFrame({'id':[1,2,3], 'name':['Ana','Beto','Carla']})
+orders = pd.DataFrame({'user_id':[1,1,3], 'amount':[100,50,200]})
+
+# INNER JOIN
+users.merge(orders, left_on='id', right_on='user_id', how='inner')
+
+# LEFT JOIN
+users.merge(orders, left_on='id', right_on='user_id', how='left')
+
+# Cuando se llaman igual:
+users.rename(columns={'id':'user_id'}).merge(orders, on='user_id', how='left')
+```
+
+`how` acepta: `'inner'` (default), `'left'`, `'right'`, `'outer'`,
+`'cross'`. Los mismos JOINs de SQL.
+
+<AnnotatedCode
+  language="python"
+  filename="merge-traps.py"
+  annotations={[
+    {
+      match: 'how=\'left\'',
+      title: 'LEFT JOIN',
+      body: 'Preserva todas las filas de users; las que no tienen orden salen con NaN.',
+    },
+    {
+      match: 'indicator=True',
+      title: 'Detectar matches',
+      body: 'Agrega columna _merge con valores left_only / right_only / both. Esencial para depurar joins.',
+    },
+    {
+      match: "validate='one_to_many'",
+      title: 'Verificar cardinalidad',
+      body: 'Pandas valida que el merge tenga la cardinalidad esperada y falla si no. Te avisa de duplicados inesperados que romperían el join.',
+    },
+  ]}
+>
+{`merged = users.merge(
+    orders,
+    left_on='id',
+    right_on='user_id',
+    how='left',
+    indicator=True,
+    validate='one_to_many',
+)
+print(merged['_merge'].value_counts())
+# both          2
+# left_only     1
+# right_only    0`}
+</AnnotatedCode>
+
+### concat: apilar DataFrames
+
+```python
+# Vertical (UNION ALL en SQL)
+pd.concat([df1, df2], axis=0, ignore_index=True)
+
+# Horizontal (raro, requiere mismo índice)
+pd.concat([df1, df2], axis=1)
+```
+
+### pivot y pivot_table
+
+```python
+# pivot: long → wide. Falla si hay duplicados (key, columns)
+df.pivot(index='date', columns='country', values='revenue')
+
+# pivot_table: agrega duplicados con aggfunc
+df.pivot_table(
+    index='date',
+    columns='country',
+    values='amount',
+    aggfunc='sum',
+    fill_value=0,
+)
+
+# melt: wide → long (inverso de pivot)
+wide.melt(id_vars=['date'], var_name='country', value_name='revenue')
+```
+
+### Window functions con transform
+
+```python
+# Suma total por usuario al lado de cada fila (sin colapsar)
+df['user_total'] = df.groupby('user_id')['amount'].transform('sum')
+
+# Rolling window (media móvil 7 días)
+df.sort_values('date', inplace=True)
+df['rolling_avg'] = df['amount'].rolling(window=7).mean()
+```
+
+`transform` mantiene la forma original; `agg` colapsa.
+
+### Tips de performance
+
+- **Lee con tipos correctos** (`dtype` argument o `pd.read_csv(..., dtype={'col':'int32'})`)
+- **`category` para columnas con pocos valores únicos** (countries, status)
+  ahorra muchísima RAM.
+- **Vectoriza, no itera**. `apply` es mejor que un `for`, pero
+  operaciones columnares directas (`df['x'] * 2`) son lo más rápido.
+- **Para datasets grandes** (>10GB) considera **Polars** o **DuckDB** —
+  Pandas es single-threaded y se queda corto.
+
+### Errores comunes
+
+- **`groupby` sin `as_index=False` o `reset_index()`** dejando la
+  columna grupal como índice. Te tropieza al joinear o exportar.
+- **`merge` que duplica filas** sin darte cuenta. Usa
+  `validate='one_to_one'` o similar.
+- **`pivot` con duplicados**: explota. Usa `pivot_table` con `aggfunc`.
+- **Mutate en cadena cuando deberías reasignar**: `df.dropna()` no muta;
+  hay que `df = df.dropna()` o `df.dropna(inplace=True)`.
+
+### Para seguir aprendiendo
+
+- [Pandas merging guide](https://pandas.pydata.org/docs/user_guide/merging.html)
+- [Modern Pandas — Tom Augspurger](https://tomaugspurger.net/posts/modern-1-intro/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="python-pandas-advanced-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Cuándo usar `pivot_table` en lugar de `pivot`?',
+      options: [
+        'Cuando hay duplicados en (index, columns) — pivot_table agrega',
+        'pivot_table es más nuevo',
+        'Cuando hay fechas',
+        'pivot no funciona en Pandas moderno',
+      ],
+      correctIndex: 0,
+      explanation: 'pivot falla con duplicados; pivot_table los agrega con aggfunc.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Diferencia entre `agg` y `transform`:',
+      options: [
+        'Son sinónimos',
+        'agg colapsa filas; transform mantiene la forma original',
+        'transform no funciona con groupby',
+        'agg es deprecado',
+      ],
+      correctIndex: 1,
+      explanation: 'agg = SQL GROUP BY; transform = SQL window function.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: '`merge` con `validate=\'one_to_many\'` falla si la cardinalidad no es esa.',
+      correct: true,
+      explanation: 'Salvavidas para detectar duplicados que inflan el join.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'JOIN tipo left con merge.',
+      template: 'users.merge(orders, on=\\\'id\\\', ___=\\\'left\\\')',
+      answer: 'how',
+      caseSensitive: false,
+      explanation: 'how especifica el tipo de join.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Suma total por usuario al lado de cada fila (sin colapsar):',
+      options: [
+        'df.groupby("user").agg("sum")',
+        'df.groupby("user")["amount"].transform("sum")',
+        'df.sum()',
+        'df.cumsum()',
+      ],
+      correctIndex: 1,
+      explanation: 'transform preserva la forma original; agg colapsa.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="python-pandas-advanced-exercise"
+  title="Merge + agregación"
+  description="Implementa `joinAndSum(users, orders)` que junta orders con users por user_id (left join) y devuelve un objeto { [name]: total }."
+  language="javascript"
+  starterCode={`function joinAndSum(users, orders) {
+  return {};
+}
+
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'},{id:3,name:'Carla'}];
+const orders = [{user_id:1,amount:100},{user_id:1,amount:50},{user_id:3,amount:200}];
+console.log(joinAndSum(users, orders));`}
+  solution={`function joinAndSum(users, orders) {
+  const result = {};
+  for (const u of users) {
+    result[u.name] = orders
+      .filter(o => o.user_id === u.id)
+      .reduce((s, o) => s + o.amount, 0);
+  }
+  return result;
+}
+const users = [{id:1,name:'Ana'},{id:2,name:'Beto'},{id:3,name:'Carla'}];
+const orders = [{user_id:1,amount:100},{user_id:1,amount:50},{user_id:3,amount:200}];
+console.log(joinAndSum(users, orders));`}
+  hints={[
+    'Recorre users; para cada uno, filtra orders.',
+    'Suma con reduce.',
+    'Beto sin orders -> 0.',
+  ]}
+  tests={[
+    {
+      description: 'suma orders del user',
+      assert: 'joinAndSum([{id:1,name:"a"}],[{user_id:1,amount:5},{user_id:1,amount:7}]).a === 12',
+    },
+    {
+      description: 'user sin orders -> 0',
+      assert: 'joinAndSum([{id:1,name:"a"},{id:2,name:"b"}],[{user_id:1,amount:5}]).b === 0',
+    },
+    {
+      description: 'preserva todos los users',
+      assert: 'Object.keys(joinAndSum([{id:1,name:"a"},{id:2,name:"b"}],[])).length === 2',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **NumPy** — operaciones vectorizadas para cuando Pandas
+es demasiado lento.

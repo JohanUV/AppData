@@ -1,0 +1,328 @@
+## dbt: models, tests y docs
+
+La lección anterior cubrió los basics de dbt. Ahora vamos a profundidad
+en cómo escribir modelos production-grade, tests potentes, y
+documentación que se mantiene viva.
+
+### Materializaciones en detalle
+
+```sql
+-- Incremental: solo procesa filas nuevas/cambiadas
+{{ config(
+    materialized='incremental',
+    unique_key='order_id',
+    on_schema_change='sync_all_columns'
+) }}
+
+SELECT *
+FROM {{ source('app', 'orders') }}
+{% if is_incremental() %}
+WHERE updated_at > (SELECT MAX(updated_at) FROM {{ this }})
+{% endif %}
+```
+
+`is_incremental()` es true solo cuando ya existe la tabla. La primera
+vez carga todo; corridas siguientes solo el delta.
+
+`unique_key` permite dedupes (incremental con MERGE en Snowflake/BQ).
+
+### Sources: declarar inputs
+
+```yaml
+# models/staging/_sources.yml
+version: 2
+
+sources:
+  - name: app
+    database: raw
+    schema: app_postgres
+    tables:
+      - name: orders
+        description: Órdenes del backend
+        loaded_at_field: updated_at
+        freshness:
+          warn_after: {count: 12, period: hour}
+          error_after: {count: 24, period: hour}
+        columns:
+          - name: id
+            tests: [unique, not_null]
+      - name: customers
+```
+
+`freshness` te avisa si los datos crudos no se actualizaron a tiempo
+(warning a 12h sin updates, error a 24h). `dbt source freshness`
+verifica.
+
+### Tests built-in vs custom
+
+**Built-in (en YAML):**
+
+```yaml
+columns:
+  - name: order_id
+    tests:
+      - unique
+      - not_null
+  - name: amount
+    tests:
+      - not_null
+      - dbt_utils.expression_is_true:
+          expression: ">= 0"
+  - name: customer_id
+    tests:
+      - relationships:
+          to: ref('dim_customer')
+          field: customer_key
+```
+
+`dbt_utils` es un paquete con tests extra: rangos, fechas, strings.
+
+**Tests custom (SQL en `tests/`):**
+
+```sql
+-- tests/no_orphan_orders.sql
+SELECT order_id
+FROM {{ ref('fct_revenue_daily') }} f
+LEFT JOIN {{ ref('dim_customer') }} c
+  ON f.customer_key = c.customer_key
+WHERE c.customer_key IS NULL
+```
+
+Si la query devuelve **filas**, el test falla. (sin filas = pass)
+
+### Macros: reutilizar SQL
+
+```sql
+-- macros/cents_to_dollars.sql
+{% macro cents_to_dollars(amount_col) %}
+    ({{ amount_col }} / 100)::DECIMAL(12, 2)
+{% endmacro %}
+```
+
+Uso:
+
+```sql
+SELECT
+    order_id,
+    {{ cents_to_dollars('amount_cents') }} AS amount_dollars
+FROM {{ ref('stg_orders') }}
+```
+
+Para cálculos complejos repetidos. dbt_utils trae decenas:
+`pivot()`, `surrogate_key()`, `date_spine()`.
+
+### Snapshots: SCD Type 2 sin esfuerzo
+
+<AnnotatedCode
+  language="sql"
+  filename="snapshots/customer_snapshot.sql"
+  annotations={[
+    {
+      match: 'unique_key=\'id\'',
+      title: 'Identificador del registro',
+      body: 'dbt usa esta columna para detectar cambios. Cada vez que ese id cambia (otros campos), abre nueva versión.',
+    },
+    {
+      match: 'strategy=\'timestamp\'',
+      title: 'Estrategia de detección',
+      body: 'timestamp: detecta cambios por updated_at. check: compara hash de columnas. Timestamp es más rápido pero requiere updated_at confiable.',
+    },
+    {
+      match: 'updated_at',
+      title: 'Columna que indica cambio',
+      body: 'Si esta columna avanza, dbt asume que algo cambió y crea nueva versión.',
+    },
+    {
+      match: 'dbt_valid_from',
+      title: 'Columnas auto-generadas',
+      body: 'dbt agrega: dbt_valid_from, dbt_valid_to (NULL = current), dbt_scd_id, dbt_updated_at.',
+    },
+  ]}
+>
+{`{% snapshot customer_snapshot %}
+{{
+    config(
+      target_schema='snapshots',
+      unique_key='id',
+      strategy='timestamp',
+      updated_at='updated_at',
+    )
+}}
+SELECT * FROM {{ source('app', 'customers') }}
+{% endsnapshot %}
+
+-- Resultado: tabla snapshots.customer_snapshot con
+-- columnas originales + dbt_valid_from + dbt_valid_to + dbt_scd_id`}
+</AnnotatedCode>
+
+```bash
+dbt snapshot   # corre snapshots; suele agendarse cada 1-6 horas
+```
+
+### Docs auto-generados
+
+```bash
+dbt docs generate   # crea catalog.json + manifest.json
+dbt docs serve      # sirve en localhost:8080
+```
+
+Te da:
+
+- Lineage interactivo (clickeable de modelo a modelo).
+- Descripciones de cada columna (de los YAMLs).
+- Tests asociados.
+- SQL renderizado.
+- Linaje column-level (Cloud / dbt-osmosis).
+
+Para que las docs sirvan, **escribir descripciones** en los YAMLs
+desde el día 1.
+
+### Patrón staging → marts
+
+```
+stg_orders        ←  source app.orders, casts y rename
+stg_customers     ←  source app.customers
+int_order_summary ←  stg_orders + stg_customers, joins intermedios
+fct_revenue_daily ←  int_order_summary, agregaciones finales
+dim_customer      ←  stg_customers, SCD desde snapshot
+```
+
+Capas evitan que `fct_revenue` referencie `app.orders` directo. Si el
+source cambia, solo actualizas `stg_*`.
+
+### Performance tips
+
+- **Incremental** para facts grandes.
+- **Tablas en lugar de views** para modelos consultados frecuentemente.
+- **Particionamiento + clustering** vía `config(partition_by=..., cluster_by=...)`
+  en BigQuery.
+- **dbt_utils.deduplicate** para limpieza.
+- **Compilar y revisar SQL antes de run**: `dbt compile`.
+
+### Errores comunes
+
+- **YAML sin descripciones**: docs vacías → nadie las lee.
+- **Materializar todo como table**: refresh lento.
+- **Tests insuficientes**: solo `not_null` no detecta lógica
+  rota.
+- **No correr `dbt test` en CI**: cambios pasan sin validación.
+- **Macros copy-paste sin parametrizar**: pierdes la ventaja de
+  abstracción.
+- **Snapshots sin schedule**: si los corres una vez al día y la
+  fuente se actualiza más rápido, pierdes versiones intermedias.
+
+### Para seguir aprendiendo
+
+- [dbt best practices](https://docs.getdbt.com/best-practices)
+- [dbt-utils](https://github.com/dbt-labs/dbt-utils)
+- [Awesome dbt](https://github.com/Hiflylabs/awesome-dbt)
+
+---
+
+## Quiz
+
+<Quiz
+  id="etl-dbt-models-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: '¿Qué hace `is_incremental()`?',
+      options: [
+        'Convierte el modelo en incremental',
+        'Devuelve true cuando el modelo ya existe (corrida no-inicial)',
+        'Es un test',
+        'Crea índice',
+      ],
+      correctIndex: 1,
+      explanation: 'Lo usas en {% if %} para añadir WHERE updated_at > MAX en runs incrementales.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Un test custom en dbt pasa si la query devuelve cero filas.',
+      correct: true,
+      explanation: 'Las filas devueltas son las "violaciones".',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: '¿Para qué sirven los snapshots de dbt?',
+      options: [
+        'Backup',
+        'Implementar SCD Type 2 automáticamente',
+        'Particionar tablas',
+        'Crear índices',
+      ],
+      correctIndex: 1,
+      explanation: 'Manejo automático de versiones históricas.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Comando para generar la documentación.',
+      template: 'dbt docs ___',
+      answer: 'generate',
+      caseSensitive: false,
+      explanation: 'dbt docs generate crea catalog.json + manifest.json.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Test built-in que verifica que valores en una columna son únicos:',
+      options: ['unique', 'distinct', 'no_dupes', 'pk_test'],
+      correctIndex: 0,
+      explanation: 'unique es uno de los 4 tests built-in (unique, not_null, accepted_values, relationships).',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="etl-dbt-models-exercise"
+  title="Validador de YAML schema"
+  description="Implementa `validateColumnTests(col)` que devuelve true si el objeto column tiene name + al menos 1 test. Ejemplo: {name:'id', tests:['not_null']} → true."
+  language="javascript"
+  starterCode={`function validateColumnTests(col) {
+  return false;
+}
+
+console.log(validateColumnTests({name:'id', tests:['not_null','unique']}));   // true
+console.log(validateColumnTests({name:'amount'}));                             // false (sin tests)
+console.log(validateColumnTests({tests:['not_null']}));                       // false (sin name)`}
+  solution={`function validateColumnTests(col) {
+  if (!col || typeof col !== 'object') return false;
+  if (!col.name) return false;
+  return Array.isArray(col.tests) && col.tests.length >= 1;
+}
+console.log(validateColumnTests({name:'id', tests:['not_null','unique']}));
+console.log(validateColumnTests({name:'amount'}));
+console.log(validateColumnTests({tests:['not_null']}));`}
+  hints={[
+    'Verifica name presente.',
+    'Verifica tests array con ≥1 elemento.',
+  ]}
+  tests={[
+    {
+      description: 'name + tests OK',
+      assert: 'validateColumnTests({name:"id",tests:["unique"]}) === true',
+    },
+    {
+      description: 'sin tests',
+      assert: 'validateColumnTests({name:"id"}) === false',
+    },
+    {
+      description: 'sin name',
+      assert: 'validateColumnTests({tests:["not_null"]}) === false',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **caso práctico — pipeline E2E**.

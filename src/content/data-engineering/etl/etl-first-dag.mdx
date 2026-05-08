@@ -1,0 +1,312 @@
+## Tu primer DAG
+
+Esta lección es práctica: vas a escribir, programar y correr tu
+primer DAG en Airflow. Asumimos que ya tienes Airflow corriendo (pip
++ standalone o docker-compose).
+
+### Setup local rápido
+
+```bash
+# Forma más rápida (modo standalone)
+pip install apache-airflow
+airflow standalone
+
+# Te imprime la URL (http://localhost:8080) y un user admin con su password
+```
+
+`standalone` levanta scheduler + webserver + SQLite en una sola
+terminal. **No para producción**, ideal para desarrollo.
+
+Para algo más cercano a producción, usa
+[official docker-compose](https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/).
+
+### Estructura de un proyecto
+
+```
+my-airflow/
+├── dags/
+│   ├── daily_revenue.py
+│   └── weekly_report.py
+├── plugins/
+└── airflow.cfg
+```
+
+`AIRFLOW_HOME` por default es `~/airflow`. Los DAGs viven en `dags/`
+dentro de él. El scheduler escanea esa carpeta cada 30 segundos.
+
+### El DAG paso a paso
+
+```python
+# dags/daily_revenue.py
+from datetime import datetime, timedelta
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.operators.bash import BashOperator
+
+def extract_orders(**context):
+    """Extrae órdenes del día anterior y guarda en /tmp."""
+    execution_date = context['ds']    # YYYY-MM-DD del run actual
+    print(f'Extrayendo órdenes para {execution_date}')
+    # Aquí iría: requests.get(...) o psycopg2.execute(...)
+    with open(f'/tmp/orders-{execution_date}.json', 'w') as f:
+        f.write('[]')
+    return execution_date              # esto va a XCom
+
+def transform_data(**context):
+    """Carga JSON, transforma con pandas, guarda como Parquet."""
+    ti = context['ti']
+    date = ti.xcom_pull(task_ids='extract_orders')
+    print(f'Transformando para {date}')
+
+default_args = {
+    'owner': 'data',
+    'depends_on_past': False,
+    'retries': 2,
+    'retry_delay': timedelta(minutes=5),
+    'email_on_failure': False,
+}
+
+with DAG(
+    dag_id='daily_revenue',
+    default_args=default_args,
+    description='Pipeline de revenue diario',
+    schedule='@daily',
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+    tags=['revenue', 'production'],
+) as dag:
+
+    extract = PythonOperator(
+        task_id='extract_orders',
+        python_callable=extract_orders,
+    )
+
+    transform = PythonOperator(
+        task_id='transform_data',
+        python_callable=transform_data,
+    )
+
+    load = BashOperator(
+        task_id='load_to_warehouse',
+        bash_command='echo "loading {{ ds }}" && sleep 2',
+    )
+
+    notify = BashOperator(
+        task_id='notify_team',
+        bash_command='echo "✓ revenue actualizado para {{ ds }}"',
+    )
+
+    extract >> transform >> load >> notify
+```
+
+### Cosas a notar
+
+<AnnotatedCode
+  language="python"
+  filename="dag-anatomy.py"
+  annotations={[
+    {
+      match: 'context[\'ds\']',
+      title: 'Variables de contexto',
+      body: 'Airflow inyecta un dict con metadata del run: ds (logical date YYYY-MM-DD), execution_date (datetime), task_instance, dag_run, etc. Útiles para parametrizar.',
+    },
+    {
+      match: '{{ ds }}',
+      title: 'Templates Jinja',
+      body: 'Strings en operadores se renderizan con Jinja. {{ ds }} es la logical date. Lo evalúa Airflow al ejecutar, no al cargar el DAG.',
+    },
+    {
+      match: 'xcom_pull',
+      title: 'Comunicación entre tareas',
+      body: 'XCom (cross-communication) permite pasar pequeños valores entre tareas. Lo cubrimos en lección 5 — para datos grandes, usa S3/storage.',
+    },
+    {
+      match: 'tags=[\'revenue\', \'production\']',
+      title: 'Filtros en UI',
+      body: 'Tags facilitan navegar la UI cuando tienes 100+ DAGs. También sirven para owner/equipo.',
+    },
+  ]}
+>
+{`def task(**context):
+    date = context['ds']
+    ti = context['ti']
+    upstream_value = ti.xcom_pull(task_ids='other_task')
+    
+op = BashOperator(
+    task_id='echo_date',
+    bash_command='echo "running {{ ds }}"',
+)`}
+</AnnotatedCode>
+
+### Probar el DAG
+
+Antes de schedule, verifica que parsea:
+
+```bash
+# Verifica sintaxis y dependencias
+python dags/daily_revenue.py
+
+# Lista DAGs registrados
+airflow dags list | grep daily_revenue
+
+# Test sin tocar BD ni schedule
+airflow dags test daily_revenue 2026-05-15
+
+# Test de una sola tarea
+airflow tasks test daily_revenue extract_orders 2026-05-15
+```
+
+`tasks test` corre la tarea ignorando dependencias y sin escribir al
+metadata DB — perfecto para iterar.
+
+### Trigger manual desde UI
+
+1. Ve a http://localhost:8080
+2. Login (admin / `password` mostrado por airflow standalone)
+3. Encuentra `daily_revenue` en la lista
+4. Toggle el switch para activarlo (sino sigue paused)
+5. Botón "▷" para trigger inmediato
+
+La UI te muestra el grafo, logs por tarea, gantt de tiempos, y el
+historial.
+
+### Qué pasa cuando falla
+
+- Si una tarea falla y hay `retries: 2`, Airflow espera `retry_delay`
+  y reintenta. Hasta 2 retries.
+- Tras agotar retries, marca `failed`.
+- Si `email_on_failure: True` y SMTP configurado, manda email.
+- En la UI ves la tarea en rojo, con logs y stack trace completos.
+
+### Errores comunes
+
+- **DAG con `time.sleep` en el módulo (fuera de funciones)**: el
+  scheduler relee el DAG cada 30s y se cuelga.
+- **Imports lentos en el módulo**: idem. Mueve a la función `python_callable`.
+- **Crear conexiones a BD en `python_callable` y olvidar cerrar**.
+- **`catchup=True`** sin pensar — explosión de runs cuando levantas
+  el scheduler.
+- **Confiar en el orden de listas**: usa `>>` explícito, no asumas
+  orden.
+
+### Para seguir aprendiendo
+
+- [Airflow tutorial — official](https://airflow.apache.org/docs/apache-airflow/stable/tutorial/index.html)
+- [Astronomer Academy — Airflow basics](https://academy.astronomer.io/)
+
+---
+
+## Quiz
+
+<Quiz
+  id="etl-first-dag-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Carpeta donde Airflow busca DAGs por default:',
+      options: ['./scripts/', '$AIRFLOW_HOME/dags/', '/etc/airflow/', '/opt/'],
+      correctIndex: 1,
+      explanation: 'Default: ~/airflow/dags. Configurable via AIRFLOW__CORE__DAGS_FOLDER.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: '`{{ ds }}` en un BashOperator es:',
+      options: [
+        'Una variable Python',
+        'Un template Jinja: la logical date YYYY-MM-DD del run',
+        'Un placeholder vacío',
+        'Un bug',
+      ],
+      correctIndex: 1,
+      explanation: 'Airflow renderiza Jinja en strings de operadores antes de ejecutar.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: '`airflow tasks test` corre la tarea sin escribir al metadata DB.',
+      correct: true,
+      explanation: 'Ideal para iterar sin contaminar el historial.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Operador para correr Python:',
+      template: '___Operator(task_id="x", python_callable=fn)',
+      answer: 'Python',
+      caseSensitive: false,
+      explanation: 'PythonOperator de airflow.operators.python.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: '¿Por qué evitar `time.sleep` en el módulo del DAG?',
+      options: [
+        'Es lento',
+        'El scheduler relee el DAG cada 30s; cualquier código top-level corre cada vez',
+        'No funciona en Airflow',
+        'Es inseguro',
+      ],
+      correctIndex: 1,
+      explanation: 'Mantén DAGs livianos; lógica pesada en callables.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="etl-first-dag-exercise"
+  title="Resolver orden topológico"
+  description="Implementa `topoSort(deps)` donde deps es array de [from, to] (from depende de to). Devuelve array de nodos en orden de ejecución (dependencias primero)."
+  language="javascript"
+  starterCode={`function topoSort(deps) {
+  return [];
+}
+
+console.log(topoSort([['transform','extract'],['load','transform']]));
+// ['extract','transform','load']`}
+  solution={`function topoSort(deps) {
+  const graph = {};
+  const inDegree = {};
+  for (const [from, to] of deps) {
+    (graph[to] ||= []).push(from);
+    inDegree[from] = (inDegree[from] || 0) + 1;
+    inDegree[to] = inDegree[to] || 0;
+  }
+  const queue = Object.keys(inDegree).filter(n => inDegree[n] === 0);
+  const result = [];
+  while (queue.length) {
+    const n = queue.shift();
+    result.push(n);
+    for (const m of graph[n] || []) {
+      if (--inDegree[m] === 0) queue.push(m);
+    }
+  }
+  return result;
+}
+console.log(topoSort([['transform','extract'],['load','transform']]));`}
+  hints={[
+    'Algoritmo de Kahn: cuenta in-degree, procesa nodos con 0.',
+    '[from, to] → from depende de to, así que to va primero.',
+  ]}
+  tests={[
+    {
+      description: 'orden simple',
+      assert: 'JSON.stringify(topoSort([["b","a"]])) === \\\'["a","b"]\\\'',
+    },
+    {
+      description: 'cadena de 3',
+      assert: 'JSON.stringify(topoSort([["c","b"],["b","a"]])) === \\\'["a","b","c"]\\\'',
+    },
+  ]}
+/>
+
+---
+
+Próxima lección: **operadores y sensores**.

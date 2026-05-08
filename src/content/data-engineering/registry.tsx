@@ -74,6 +74,42 @@ import SqlOptEs from './sql/sql-query-optimization.mdx';
 import SqlOptEn from './sql/sql-query-optimization.en.mdx';
 import SqlOptPt from './sql/sql-query-optimization.pt.mdx';
 
+// Módulo python (solo ES en fase 6.2)
+import PyBasicsEs from './python/python-pandas-basics.mdx';
+import PyAdvEs from './python/python-pandas-advanced.mdx';
+import PyNumpyEs from './python/python-numpy.mdx';
+import PyApisEs from './python/python-apis-requests.mdx';
+import PySqlAlcEs from './python/python-sqlalchemy.mdx';
+import PyParquetEs from './python/python-parquet.mdx';
+import PyTestEs from './python/python-testing.mdx';
+import PyVenvEs from './python/python-venv-deps.mdx';
+
+// Módulo modeling
+import ModNormEs from './modeling/modeling-normalization.mdx';
+import ModOltpEs from './modeling/modeling-oltp-vs-olap.mdx';
+import ModStarEs from './modeling/modeling-star-schema.mdx';
+import ModSnowEs from './modeling/modeling-snowflake-schema.mdx';
+import ModScdEs from './modeling/modeling-scd.mdx';
+import ModEcomEs from './modeling/modeling-ecommerce-case.mdx';
+
+// Módulo etl
+import EtlVsEs from './etl/etl-vs-elt.mdx';
+import EtlAirfEs from './etl/etl-airflow-intro.mdx';
+import EtlDagEs from './etl/etl-first-dag.mdx';
+import EtlOpEs from './etl/etl-operators-sensors.mdx';
+import EtlXcomEs from './etl/etl-xcoms-deps.mdx';
+import EtlDbtIntroEs from './etl/etl-dbt-intro.mdx';
+import EtlDbtModelsEs from './etl/etl-dbt-models-tests.mdx';
+import EtlE2eEs from './etl/etl-e2e-pipeline.mdx';
+
+// Módulo warehouse
+import WhConcEs from './warehouse/wh-concepts.mdx';
+import WhBqEs from './warehouse/wh-bigquery.mdx';
+import WhSnowEs from './warehouse/wh-snowflake.mdx';
+import WhPartEs from './warehouse/wh-partitioning.mdx';
+import WhCostEs from './warehouse/wh-cost-optimization.mdx';
+import WhRevEs from './warehouse/wh-reverse-etl.mdx';
+
 export interface LessonMeta {
   slug: string;
   module: string;
@@ -95,9 +131,10 @@ export interface LessonEntry {
 
 // ──────────────────────────────────────────────────────────────────────
 // Mapa de componentes MDX reales por slug.
-// Lo que NO esté aquí cae a LessonStub.
+// Una entrada puede ser parcial (solo es): los locales faltantes caen
+// a stub localizado.
 // ──────────────────────────────────────────────────────────────────────
-const realComponents: Record<string, Record<Locale, MDXContent>> = {
+const realComponents: Record<string, Partial<Record<Locale, MDXContent>>> = {
   'what-is-data-engineering': {
     es: IntroEs as MDXContent,
     en: IntroEn as MDXContent,
@@ -193,6 +230,38 @@ const realComponents: Record<string, Record<Locale, MDXContent>> = {
     en: SqlOptEn as MDXContent,
     pt: SqlOptPt as MDXContent,
   },
+  // ── Módulos 2-5: solo ES en fase 6.2 (EN/PT caen a stub localizado) ──
+  'python-pandas-basics': { es: PyBasicsEs as MDXContent },
+  'python-pandas-advanced': { es: PyAdvEs as MDXContent },
+  'python-numpy': { es: PyNumpyEs as MDXContent },
+  'python-apis-requests': { es: PyApisEs as MDXContent },
+  'python-sqlalchemy': { es: PySqlAlcEs as MDXContent },
+  'python-parquet': { es: PyParquetEs as MDXContent },
+  'python-testing': { es: PyTestEs as MDXContent },
+  'python-venv-deps': { es: PyVenvEs as MDXContent },
+
+  'modeling-normalization': { es: ModNormEs as MDXContent },
+  'modeling-oltp-vs-olap': { es: ModOltpEs as MDXContent },
+  'modeling-star-schema': { es: ModStarEs as MDXContent },
+  'modeling-snowflake-schema': { es: ModSnowEs as MDXContent },
+  'modeling-scd': { es: ModScdEs as MDXContent },
+  'modeling-ecommerce-case': { es: ModEcomEs as MDXContent },
+
+  'etl-vs-elt': { es: EtlVsEs as MDXContent },
+  'etl-airflow-intro': { es: EtlAirfEs as MDXContent },
+  'etl-first-dag': { es: EtlDagEs as MDXContent },
+  'etl-operators-sensors': { es: EtlOpEs as MDXContent },
+  'etl-xcoms-deps': { es: EtlXcomEs as MDXContent },
+  'etl-dbt-intro': { es: EtlDbtIntroEs as MDXContent },
+  'etl-dbt-models-tests': { es: EtlDbtModelsEs as MDXContent },
+  'etl-e2e-pipeline': { es: EtlE2eEs as MDXContent },
+
+  'wh-concepts': { es: WhConcEs as MDXContent },
+  'wh-bigquery': { es: WhBqEs as MDXContent },
+  'wh-snowflake': { es: WhSnowEs as MDXContent },
+  'wh-partitioning': { es: WhPartEs as MDXContent },
+  'wh-cost-optimization': { es: WhCostEs as MDXContent },
+  'wh-reverse-etl': { es: WhRevEs as MDXContent },
 };
 
 // ──────────────────────────────────────────────────────────────────────
@@ -238,6 +307,14 @@ const introMeta: LessonMetaEntry = {
 // ──────────────────────────────────────────────────────────────────────
 function buildEntry(meta: LessonMetaEntry): LessonEntry {
   const real = realComponents[meta.slug];
+  // Mezcla real + stub localizado por cada locale faltante.
+  const components: Record<Locale, MDXContent> = {
+    es: real?.es ?? stubComponents.es,
+    en: real?.en ?? stubComponents.en,
+    pt: real?.pt ?? stubComponents.pt,
+  };
+  // isStub = true sólo si NINGUNA locale tiene contenido real (pure stub).
+  const isStub = !real || (!real.es && !real.en && !real.pt);
   return {
     meta: {
       slug: meta.slug,
@@ -251,8 +328,8 @@ function buildEntry(meta: LessonMetaEntry): LessonEntry {
       title: meta.title,
       description: meta.description,
     },
-    components: real ?? stubComponents,
-    isStub: !real,
+    components,
+    isStub,
   };
 }
 

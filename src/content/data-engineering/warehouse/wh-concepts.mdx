@@ -1,0 +1,235 @@
+## Conceptos de Data Warehouse
+
+Un **Data Warehouse** es una base de datos especializada en analítica:
+optimizada para queries que escanean millones-billones de filas con
+joins y agregaciones, no para inserts y reads de una fila como un
+OLTP. Es el corazón de cualquier stack de datos moderno.
+
+### Diferencia con BD operacional
+
+Ya lo cubrimos en la lección de OLTP vs OLAP del módulo de Modelado, pero
+recapitulando los puntos críticos para el resto del módulo:
+
+| | OLTP (Postgres) | Warehouse (Snowflake/BQ/Redshift) |
+|---|---|---|
+| Storage | row-oriented | columnar |
+| Latencia | ms | s/min |
+| Granularidad | 1 fila | millones |
+| Compute | acoplado al storage | separado |
+| Concurrency | miles de conexiones | decenas |
+
+### Separación storage/compute
+
+La revolución de los warehouses cloud (BigQuery, Snowflake, Redshift Spectrum)
+es la **separación**:
+
+<Diagram type="mermaid">
+{`flowchart TB
+  S[(Object Storage<br/>S3 / GCS)] --> C1[Compute cluster A<br/>analista 1]
+  S --> C2[Compute cluster B<br/>pipeline batch]
+  S --> C3[Compute cluster C<br/>BI dashboards]`}
+</Diagram>
+
+Datos viven en object storage barato (S3, GCS). Compute se levanta y
+baja según demanda. Resultado:
+
+- **Escalas storage independiente de compute**: 10TB de datos no
+  obligan a pagar 10TB de servers prendidos.
+- **Múltiples consumidores aislados**: el query del analista no traba
+  el pipeline batch.
+- **Pago por uso**: solo cuando consultas o cargas.
+
+Antes (Teradata, Vertica on-prem): storage + compute pegados en el
+mismo cluster. Si querías más capacidad, comprabas un nodo entero.
+
+### MPP (Massively Parallel Processing)
+
+Los warehouses dividen una query en docenas-cientos de workers que
+procesan **chunks** de datos en paralelo:
+
+<Diagram type="mermaid">
+{`flowchart TB
+  Q[Query] --> P[Planner<br/>divide en partes]
+  P --> W1[Worker 1<br/>chunk A] --> R[Reducer<br/>combina]
+  P --> W2[Worker 2<br/>chunk B] --> R
+  P --> W3[Worker 3<br/>chunk C] --> R
+  R --> O[Resultado]`}
+</Diagram>
+
+Por eso un warehouse procesa 1TB en segundos. El compute paralelo cuesta
+caro (segundos × cientos de cores), pero entrega resultados inmediatos.
+
+### Data lake vs warehouse vs lakehouse
+
+- **Data lake**: archivos crudos en S3/GCS (Parquet, JSON, CSV). Barato,
+  flexible, sin estructura impuesta. Acceso vía Spark / Presto.
+- **Warehouse**: datos estructurados en tablas con schema. SQL nativo,
+  optimizado para consultas. BigQuery, Snowflake, Redshift.
+- **Lakehouse**: combina ambos. Tablas con metadata (Iceberg, Delta,
+  Hudi) sobre Parquet en S3. Soporta SQL, ACID, time travel, ML
+  directo sobre data lake.
+
+En 2026 la tendencia es lakehouse: storage abierto en S3 + motores de
+query plug-and-play (Snowflake, BigQuery, Trino, Athena, Spark).
+
+### Los 4 grandes
+
+- **BigQuery (Google)**: serverless, MPP automático, separa storage y
+  slots. Free tier: 1TB query/mes + 10GB storage.
+- **Snowflake**: warehouse-as-a-service, multi-cloud, virtual warehouses
+  separan workloads. Trial 30 días con $400 crédito.
+- **Redshift (AWS)**: cluster managed; RA3 nodos separan storage/compute.
+  Más cerca de "DBA" tradicional.
+- **Databricks SQL**: el lakehouse hecho producto, sobre Spark + Delta.
+  Combina ML.
+
+Para este módulo cubrimos BigQuery y Snowflake (los más usados en
+nuevos proyectos).
+
+### Lo que un warehouse hace bien
+
+- Agregaciones sobre billones de filas en segundos.
+- JOINs entre tablas grandes con planning automático.
+- Concurrencia: 100 analistas consultando a la vez sin bloquearse.
+- Particionamiento + clustering automático/manual.
+- ML SQL inline (BQML, Snowpark).
+
+### Lo que NO hace bien
+
+- Inserts/updates fila por fila (latencia alta).
+- Latencia sub-segundo para apps web.
+- Esperar consistencia ACID estricta entre warehouse y otros sistemas
+  en tiempo real.
+- Almacenamiento de data binaria/blobs grandes.
+
+### Modelo de costo (general)
+
+Casi todos los warehouses cobran por:
+
+1. **Storage**: $/GB/mes. Barato (~$20/TB/mes en S3).
+2. **Compute**: $/query (BigQuery: $5/TB scanned) o $/hora (Snowflake:
+   $X/hora cuando un warehouse virtual está corriendo).
+3. **Egress**: sacar datos al exterior.
+
+Optimizar costo = optimizar **scan** (BigQuery) o **runtime** (Snowflake).
+Lección 5 del módulo cubre esto a fondo.
+
+### Errores comunes
+
+- **Tratar warehouse como OLTP**: inserts fila por fila, queries
+  millas/segundo. Lento y caro.
+- **No particionar tablas grandes**: cada query escanea todo →
+  factura enorme.
+- **`SELECT *` en warehouse columnar**: trae todas las columnas
+  cuando solo necesitas 2.
+- **Múltiples warehouses pequeños** vs uno consolidado: complejidad
+  operacional sin beneficio.
+
+### Para seguir aprendiendo
+
+- [Designing Data-Intensive Applications — capítulo 3 y 10](https://dataintensive.net/)
+- [Snowflake Architecture](https://docs.snowflake.com/en/user-guide/intro-key-concepts)
+- [BigQuery Architecture](https://cloud.google.com/bigquery/docs/internals)
+
+---
+
+## Quiz
+
+<Quiz
+  id="wh-concepts-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'La gran innovación de los warehouses cloud modernos es:',
+      options: [
+        'SQL más rico',
+        'Separación de storage y compute, escala independiente',
+        'No usan SQL',
+        'Más rápidos que OLTP',
+      ],
+      correctIndex: 1,
+      explanation: 'Storage barato S3/GCS + compute on-demand.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'MPP significa:',
+      options: [
+        'Multi-Process Plan',
+        'Massively Parallel Processing — divide queries entre workers paralelos',
+        'Multi-Phase Pipeline',
+        'Master-Pool Plan',
+      ],
+      correctIndex: 1,
+      explanation: 'Cientos de cores procesan chunks en paralelo.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: 'Lakehouse combina la flexibilidad del data lake con la estructura del warehouse.',
+      correct: true,
+      explanation: 'Iceberg/Delta sobre Parquet en S3.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Storage en BigQuery vive físicamente en:',
+      template: 'Google ___ Storage',
+      answer: 'Cloud',
+      caseSensitive: false,
+      explanation: 'GCS — el equivalente de S3 en GCP.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'BigQuery cobra principalmente por:',
+      options: [
+        'Número de queries',
+        'Bytes escaneados (sin importar el resultado)',
+        'CPU',
+        'Conexiones',
+      ],
+      correctIndex: 1,
+      explanation: '$5/TB scanned. Por eso particionar y clustering importan.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="wh-concepts-exercise"
+  title="Calculador de costo BigQuery"
+  description="Implementa `bqQueryCost(scannedBytes, pricePerTB)` que devuelve el costo en USD. 1 TB = 2^40 bytes."
+  language="javascript"
+  starterCode={`function bqQueryCost(scannedBytes, pricePerTB) {
+  return 0;
+}
+
+console.log(bqQueryCost(2**40, 5));        // 5 (1TB exacto)
+console.log(bqQueryCost(2**39, 5));        // 2.5 (0.5TB)`}
+  solution={`function bqQueryCost(scannedBytes, pricePerTB) {
+  const tb = scannedBytes / Math.pow(2, 40);
+  return tb * pricePerTB;
+}
+console.log(bqQueryCost(2**40, 5));
+console.log(bqQueryCost(2**39, 5));`}
+  hints={[
+    '1 TB = 2^40 bytes en cálculo binario.',
+    'Costo proporcional.',
+  ]}
+  tests={[
+    { description: '1TB a $5', assert: 'bqQueryCost(Math.pow(2,40), 5) === 5' },
+    { description: '0.5TB a $5', assert: 'bqQueryCost(Math.pow(2,39), 5) === 2.5' },
+    { description: '0 bytes', assert: 'bqQueryCost(0, 5) === 0' },
+  ]}
+/>
+
+---
+
+Próxima lección: **BigQuery hands-on**.

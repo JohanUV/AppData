@@ -1,0 +1,313 @@
+## BigQuery hands-on
+
+**BigQuery** es el warehouse serverless de Google Cloud. No manejas
+clusters, nodos ni tuning: levantas, escribes SQL, paga por bytes
+escaneados. Para Data Engineering en GCP es la opción default;
+también lo verás en stacks multi-cloud por su ergonomía.
+
+### Free tier para practicar
+
+- 1 TB de queries escaneados/mes — gratis.
+- 10 GB de storage — gratis.
+- Suficiente para seguir esta lección y experimentar mucho.
+
+[console.cloud.google.com/bigquery](https://console.cloud.google.com/bigquery)
+
+### Estructura de objetos
+
+```
+proyecto-gcp
+└── dataset
+    ├── table
+    └── view
+```
+
+- **Project**: tu cuenta GCP. Cobranza y permisos.
+- **Dataset**: agrupamiento lógico (~ schema en otros motores).
+- **Table / View / Materialized View**: como en SQL clásico.
+
+### SQL: standard, no dialecto raro
+
+```sql
+SELECT
+  date_trunc(date(created_at), MONTH) AS month,
+  country,
+  count(distinct user_id) AS active_users,
+  sum(amount) AS revenue
+FROM `my-project.analytics.events`
+WHERE created_at >= '2026-01-01'
+  AND event_type = 'purchase'
+GROUP BY 1, 2
+ORDER BY 1, revenue DESC;
+```
+
+Backticks para nombres con `-` o `.`. SQL moderno: window functions,
+CTEs, arrays nativos, JSON nativo.
+
+### Cargar datos
+
+**Desde GCS (lo más eficiente):**
+
+```sql
+LOAD DATA INTO analytics.orders
+FROM FILES (
+  format = 'PARQUET',
+  uris = ['gs://my-bucket/orders/*.parquet']
+);
+```
+
+**Desde la UI o `bq` CLI:**
+
+```bash
+bq load --source_format=PARQUET \
+  analytics.orders \
+  gs://my-bucket/orders/*.parquet
+```
+
+**Desde Python:**
+
+```python
+from google.cloud import bigquery
+
+client = bigquery.Client()
+job = client.load_table_from_uri(
+    'gs://my-bucket/orders/*.parquet',
+    'analytics.orders',
+    job_config=bigquery.LoadJobConfig(
+        source_format=bigquery.SourceFormat.PARQUET,
+        autodetect=True,
+    ),
+)
+job.result()
+```
+
+### Particionamiento
+
+Particionar es lo más importante para rendimiento y costo en BigQuery.
+
+```sql
+CREATE TABLE analytics.events (
+  event_id STRING,
+  user_id STRING,
+  event_type STRING,
+  amount NUMERIC,
+  created_at TIMESTAMP
+)
+PARTITION BY DATE(created_at)
+CLUSTER BY user_id, event_type;
+```
+
+Cada query con `WHERE created_at >= 'X'` solo escanea las particiones
+relevantes:
+
+<AnnotatedCode
+  language="sql"
+  filename="partition-query.sql"
+  annotations={[
+    {
+      match: "DATE(created_at) BETWEEN '2026-01-01' AND '2026-01-31'",
+      title: 'Filter por columna de partición',
+      body: 'BigQuery hace partition pruning: solo escanea las 31 particiones de enero, no las 365 del año.',
+    },
+    {
+      match: 'CLUSTER BY user_id',
+      title: 'Clustering',
+      body: 'Dentro de una partición, los datos están físicamente ordenados por las columnas de cluster. Acelera filtros = como un índice secundario.',
+    },
+    {
+      match: 'EXPLAIN',
+      title: 'Análisis del plan',
+      body: 'EXPLAIN te muestra slot count, bytes a procesar, etapas de la query. Esencial para optimizar.',
+    },
+  ]}
+>
+{`-- Query óptima
+SELECT user_id, sum(amount)
+FROM analytics.events
+WHERE DATE(created_at) BETWEEN '2026-01-01' AND '2026-01-31'
+  AND event_type = 'purchase'
+  AND user_id IN ('u1', 'u2', 'u3')
+GROUP BY 1;
+
+-- Antes de correr, mira el costo:
+-- (en la UI) "This query will process 4.2 MB"`}
+</AnnotatedCode>
+
+### Slots: la moneda del compute
+
+BigQuery factura compute en **slots** (unidades de paralelismo). Dos
+modelos:
+
+- **On-demand** (default): pagas por bytes escaneados. Sin compromiso.
+- **Reservations / Editions**: compras slots fijos. Predicible, mejor
+  para workloads constantes.
+
+Para empezar y experimentar: on-demand. Cuando consumes >1TB/día
+constante: evalúa reservations.
+
+### Datasets públicos
+
+BigQuery hosta datasets públicos enormes (Wikipedia, GitHub, NYC taxi):
+
+```sql
+-- Cuenta archivos por lenguaje en GitHub
+SELECT lang, COUNT(*) AS files
+FROM `bigquery-public-data.github_repos.languages`,
+UNNEST(language) AS l, l.lang AS lang
+GROUP BY 1
+ORDER BY 2 DESC
+LIMIT 10;
+```
+
+Perfecto para practicar SQL sobre TBs.
+
+### Funciones útiles únicas de BigQuery
+
+- **ARRAY / STRUCT**: tipos nidificados nativos.
+  ```sql
+  SELECT user_id, items[OFFSET(0)].sku FROM orders;
+  ```
+- **UNNEST**: desplegar arrays a filas.
+  ```sql
+  SELECT user_id, item.sku
+  FROM orders, UNNEST(items) AS item;
+  ```
+- **APPROX_COUNT_DISTINCT**: HyperLogLog, mucho más rápido.
+- **ML SQL** (BQML): entrena modelos sin salir de BQ.
+  ```sql
+  CREATE MODEL analytics.churn
+  OPTIONS(model_type='logistic_reg') AS
+  SELECT * FROM analytics.user_features;
+  ```
+
+### Best practices
+
+- **Particiona por DATE(timestamp)**: casi todas las tablas grandes.
+- **Cluster por columnas frecuentes en WHERE**: 1-4 columnas (no más).
+- **Evita `SELECT *`**: cobras cada columna que tocas.
+- **Pre-agregar a materialized views**: cosas que se consultan
+  diariamente.
+- **Pre-vista cost en UI antes de ejecutar**: la barra superior te dice
+  bytes a procesar.
+
+### Errores comunes
+
+- **No particionar tablas TB-scale**: cada query escanea todo →
+  factura mensual ridícula.
+- **Particionar por columnas con alta cardinalidad** (timestamp
+  exacto, user_id): explosión de particiones.
+- **`SELECT *` por costumbre**: trae 50 columnas, paga 50.
+- **Streaming inserts (sin `STREAM`)** sin throttling: caro y lento
+  comparado a batch.
+- **No usar legacy SQL en error**: si ves `#legacySQL` te encuentras
+  en sintaxis antigua, cámbiate a Standard SQL.
+
+### Para seguir aprendiendo
+
+- [BigQuery best practices](https://cloud.google.com/bigquery/docs/best-practices-performance-overview)
+- [BigQuery for ML](https://cloud.google.com/bigquery-ml/docs)
+- [Public datasets](https://cloud.google.com/bigquery/public-data)
+
+---
+
+## Quiz
+
+<Quiz
+  id="wh-bigquery-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'BigQuery on-demand cobra principalmente por:',
+      options: [
+        'Filas devueltas',
+        'Bytes escaneados (sin importar el resultado)',
+        'Tiempo de ejecución',
+        'Storage',
+      ],
+      correctIndex: 1,
+      explanation: 'Por eso particionar y SELECT explícito ahorran muchísimo.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'Particionar por DATE(timestamp) permite que BigQuery haga partition pruning con `WHERE date >= X`.',
+      correct: true,
+      explanation: 'Reduce bytes escaneados al subset de fechas relevantes.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'BigQuery slots son:',
+      options: [
+        'Espacios de storage',
+        'Unidades de paralelismo en compute',
+        'Cuotas de queries',
+        'Permisos',
+      ],
+      correctIndex: 1,
+      explanation: 'Cada slot ejecuta parte del plan paralelizado.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Para desplegar un array a filas:',
+      template: 'FROM t, ___(t.items) AS item',
+      answer: 'UNNEST',
+      caseSensitive: true,
+      explanation: 'UNNEST convierte ARRAY en filas.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Mala práctica clara:',
+      options: [
+        'Particionar por DATE',
+        'SELECT * en tabla con 50 columnas que escaneas miles de veces',
+        'Usar CLUSTER BY',
+        'Usar ARRAY',
+      ],
+      correctIndex: 1,
+      explanation: 'Cobra cada columna leída.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="wh-bigquery-exercise"
+  title="Optimizador de SELECT"
+  description="Implementa `optimizeSelect(query)` que detecte si una query usa `SELECT *` y devuelva una sugerencia ('avoid SELECT * — list specific columns') o '' si está bien."
+  language="javascript"
+  starterCode={`function optimizeSelect(query) {
+  return '';
+}
+
+console.log(optimizeSelect('SELECT * FROM t'));      // suggestion
+console.log(optimizeSelect('SELECT id, name FROM t'));// ''`}
+  solution={`function optimizeSelect(query) {
+  if (/SELECT\\s+\\*/i.test(query)) {
+    return 'avoid SELECT * — list specific columns';
+  }
+  return '';
+}
+console.log(optimizeSelect('SELECT * FROM t'));
+console.log(optimizeSelect('SELECT id, name FROM t'));`}
+  hints={[
+    'Regex para SELECT seguido de *.',
+  ]}
+  tests={[
+    { description: 'detecta *', assert: 'optimizeSelect("SELECT * FROM x").length > 0' },
+    { description: 'limpia OK', assert: 'optimizeSelect("SELECT a FROM x") === ""' },
+    { description: 'case insensitive', assert: 'optimizeSelect("select * from x").length > 0' },
+  ]}
+/>
+
+---
+
+Próxima lección: **Snowflake hands-on**.

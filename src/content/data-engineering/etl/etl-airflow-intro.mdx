@@ -1,0 +1,305 @@
+## Introducción a Apache Airflow
+
+**Apache Airflow** es la herramienta de orquestación más usada en
+Data Engineering. Sirve para programar, ejecutar y monitorear
+pipelines de datos. Si trabajas en una empresa con pipelines en
+producción, hay 70% de probabilidades de que uses Airflow.
+
+### Qué problema resuelve
+
+Tienes un pipeline:
+
+1. Extraer datos de Stripe (a las 3am).
+2. Cargar a S3.
+3. Cuando S3 esté listo, transformar con SQL.
+4. Cuando la transformación termine, mandar email al equipo.
+
+Sin orquestador: cron + scripts pegados con cinta. Si el paso 1 falla,
+los siguientes corren con data vieja. Sin alertas, sin retries, sin
+visibilidad.
+
+Airflow te da:
+
+- **Schedule** (cron-like).
+- **Dependencias** entre tareas (DAGs).
+- **Retries** automáticos en fallos.
+- **UI** para ver corridas, logs, debug.
+- **Alertas** por email/Slack.
+
+### El concepto: DAG
+
+Un **DAG** (Directed Acyclic Graph) es un workflow representado como
+grafo: nodos = tareas, aristas = dependencias.
+
+<Diagram type="mermaid">
+{`flowchart LR
+  A[extract_stripe] --> B[upload_to_s3] --> C[transform_sql] --> D[notify_team]
+  A --> E[extract_shopify] --> C`}
+</Diagram>
+
+"Acyclic" porque no se permiten loops — una tarea no puede depender
+indirectamente de sí misma.
+
+### Anatomía de un DAG
+
+```python
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from datetime import datetime, timedelta
+
+default_args = {
+    'owner': 'data-team',
+    'retries': 3,
+    'retry_delay': timedelta(minutes=5),
+    'email_on_failure': True,
+}
+
+with DAG(
+    'daily_revenue',
+    default_args=default_args,
+    schedule='0 3 * * *',           # 3am diario (cron)
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+) as dag:
+
+    def extract_data(**context):
+        print('extracting...')
+
+    extract = PythonOperator(
+        task_id='extract',
+        python_callable=extract_data,
+    )
+
+    transform = PythonOperator(
+        task_id='transform',
+        python_callable=lambda **ctx: print('transforming...'),
+    )
+
+    extract >> transform              # define dependencia
+```
+
+`>>` y `<<` son los operadores que conectan tareas. `extract >> transform`
+significa "transform corre después de que extract termine OK".
+
+### Componentes de Airflow
+
+<Diagram type="mermaid">
+{`flowchart TB
+  S[Scheduler<br/>decide qué correr] --> M[(Metadata DB<br/>Postgres/MySQL)]
+  W[Webserver<br/>UI + API] --- M
+  E[Executor<br/>ejecuta tareas] --> M
+  E --> WK1[Worker 1]
+  E --> WK2[Worker 2]
+  E --> WK3[Worker 3]`}
+</Diagram>
+
+- **Scheduler**: el cerebro. Lee DAGs, decide qué tareas corren.
+- **Executor**: estrategia de ejecución (Local, Celery, Kubernetes).
+- **Workers**: ejecutan tareas individuales.
+- **Webserver**: UI web (puerto 8080).
+- **Metadata DB**: estado de DAGs, runs, logs (Postgres usual).
+
+### Airflow vs cron
+
+| | cron | Airflow |
+|---|---|---|
+| Schedule | sí | sí |
+| Dependencias | no | sí (DAG) |
+| Retries | manual | automático |
+| UI | no | sí |
+| Logs | scattered | centralizados |
+| Backfill | no | sí |
+| Setup | trivial | mediano (BD + scheduler + UI) |
+
+Para 1 cron job no usas Airflow. Para 10+, sí.
+
+### Conceptos clave
+
+<AnnotatedCode
+  language="python"
+  filename="dag-concepts.py"
+  annotations={[
+    {
+      match: 'schedule=\'0 3 * * *\'',
+      title: 'Cron schedule',
+      body: 'Sintaxis cron estándar (minuto hora día_mes mes día_semana). 0 3 * * * = 3:00 AM diario. None = manual trigger only.',
+    },
+    {
+      match: 'start_date=datetime',
+      title: 'Punto de partida',
+      body: 'Desde cuándo Airflow considera el DAG válido. Combinado con catchup, controla si hace backfill de fechas previas.',
+    },
+    {
+      match: 'catchup=False',
+      title: 'Sin backfill automático',
+      body: 'Si hace 3 días que el scheduler está caído, ¿corres los 3 days perdidos al levantar? catchup=True sí; False solo del último.',
+    },
+    {
+      match: 'retries=3',
+      title: 'Reintentos por fallo',
+      body: 'Si la tarea falla, Airflow espera retry_delay y reintenta hasta retries veces. Tras agotarlos, marca failed.',
+    },
+  ]}
+>
+{`with DAG(
+    'daily_revenue',
+    schedule='0 3 * * *',
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+    default_args={'retries': 3, 'retry_delay': timedelta(minutes=5)},
+) as dag:
+    ...`}
+</AnnotatedCode>
+
+### Cuándo NO usar Airflow
+
+- **Streaming de baja latencia** (sub-segundo): Airflow es batch-oriented.
+  Usa Kafka + Flink/Spark Streaming.
+- **Pipelines triviales** (1 cron, no dependencias): cron + script
+  basta.
+- **Workflows que parecen flujos de aprobación humana**: Temporal o
+  Step Functions encajan mejor.
+
+### Alternativas
+
+- **Dagster**: enfocado en data assets, type system, mejor DX.
+- **Prefect**: API más Pythonic, hybrid (managed o self-hosted).
+- **AWS Step Functions**: serverless, integrado con AWS.
+- **Argo Workflows**: Kubernetes-native.
+
+Airflow sigue siendo el más adoptado por inercia + ecosistema enorme.
+
+### Errores comunes
+
+- **DAGs con efectos en el global de Python**: cualquier import o
+  función que ejecute al cargar el DAG corre cada 30s en el scheduler.
+  Mantén los DAGs livianos.
+- **Catchup=True sin pensar**: levantas Airflow tras 1 mes caído y
+  arranca 30 corridas a la vez.
+- **Tareas no idempotentes**: retry crea duplicados.
+- **Lógica pesada dentro de Python operators**: mejor delegar a Spark,
+  dbt o BigQuery — Airflow orquesta, no procesa.
+
+### Para seguir aprendiendo
+
+- [Airflow docs](https://airflow.apache.org/docs/)
+- [Astronomer Academy](https://academy.astronomer.io/) — cursos gratis
+- [Awesome Airflow](https://github.com/jghoman/awesome-apache-airflow)
+
+---
+
+## Quiz
+
+<Quiz
+  id="etl-airflow-intro-quiz"
+  xpReward={60}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Qué es un DAG en Airflow?',
+      options: [
+        'Una BD',
+        'Un workflow representado como grafo dirigido acíclico de tareas',
+        'Un scheduler',
+        'Una librería de Pandas',
+      ],
+      correctIndex: 1,
+      explanation: 'Directed Acyclic Graph: nodos=tareas, aristas=dependencias.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q2',
+      prompt: 'Tareas A y B; B corre después de A. ¿Cómo lo escribes?',
+      options: ['A + B', 'A >> B', 'A → B', 'depend(A, B)'],
+      correctIndex: 1,
+      explanation: '>> y << son los operadores de dependencia.',
+    },
+    {
+      type: 'true_false',
+      id: 'q3',
+      prompt: '`catchup=False` evita que Airflow ejecute corridas pasadas al levantarse.',
+      correct: true,
+      explanation: 'Solo corre la próxima programada.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Schedule cron para "todos los días a las 3am":',
+      template: '\\\'0 ___ * * *\\\'',
+      answer: '3',
+      caseSensitive: false,
+      explanation: '0 3 * * * = minuto 0 de la hora 3, todos los días.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: 'Cuándo NO usar Airflow?',
+      options: [
+        'Pipelines diarios complejos',
+        'Streaming sub-segundo: Airflow es batch',
+        'Cuando hay >10 tareas',
+        'En la nube',
+      ],
+      correctIndex: 1,
+      explanation: 'Latencia baja → Kafka + Flink/Spark Streaming.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="etl-airflow-intro-exercise"
+  title="Validar DAG acíclico"
+  description="Implementa `isAcyclic(edges)` donde edges es array de [from, to]. Detecta si hay ciclo."
+  language="javascript"
+  starterCode={`function isAcyclic(edges) {
+  return true;
+}
+
+console.log(isAcyclic([['A','B'],['B','C']]));         // true
+console.log(isAcyclic([['A','B'],['B','A']]));         // false (cycle)
+console.log(isAcyclic([['A','B'],['B','C'],['C','A']]));// false (cycle)`}
+  solution={`function isAcyclic(edges) {
+  const graph = {};
+  for (const [f, t] of edges) {
+    (graph[f] ||= []).push(t);
+  }
+  const WHITE = 0, GRAY = 1, BLACK = 2;
+  const color = {};
+  for (const e of edges.flat()) color[e] = WHITE;
+  function dfs(n) {
+    color[n] = GRAY;
+    for (const m of graph[n] || []) {
+      if (color[m] === GRAY) return false;
+      if (color[m] === WHITE && !dfs(m)) return false;
+    }
+    color[n] = BLACK;
+    return true;
+  }
+  for (const n in color) {
+    if (color[n] === WHITE && !dfs(n)) return false;
+  }
+  return true;
+}
+console.log(isAcyclic([['A','B'],['B','C']]));
+console.log(isAcyclic([['A','B'],['B','A']]));
+console.log(isAcyclic([['A','B'],['B','C'],['C','A']]));`}
+  hints={[
+    'DFS con coloreo: white/gray/black.',
+    'Ciclo = encontrar gris durante DFS.',
+  ]}
+  tests={[
+    { description: 'lineal acíclico', assert: 'isAcyclic([["A","B"],["B","C"]]) === true' },
+    { description: 'ciclo simple', assert: 'isAcyclic([["A","B"],["B","A"]]) === false' },
+    { description: 'ciclo de 3', assert: 'isAcyclic([["A","B"],["B","C"],["C","A"]]) === false' },
+  ]}
+/>
+
+---
+
+Próxima lección: **tu primer DAG**.

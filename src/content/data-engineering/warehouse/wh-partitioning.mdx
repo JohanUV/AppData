@@ -1,0 +1,300 @@
+## Particionamiento y clustering
+
+En warehouses columnares, **particionamiento** y **clustering** son
+las dos palancas más importantes para performance y costo. Sin ellos,
+cada query escanea toda la tabla. Con ellos, solo lo necesario.
+
+### Particionamiento: dividir en chunks físicos
+
+Particionar = dividir una tabla en archivos separados según una
+columna. El motor solo lee particiones relevantes (partition pruning).
+
+**BigQuery:**
+
+```sql
+CREATE TABLE analytics.events (
+  event_id STRING,
+  user_id STRING,
+  event_type STRING,
+  amount NUMERIC,
+  created_at TIMESTAMP
+)
+PARTITION BY DATE(created_at);
+```
+
+Esa tabla se almacena físicamente como una carpeta por día:
+
+```
+events/
+├── 2026-01-01/data.parquet
+├── 2026-01-02/data.parquet
+└── ...
+```
+
+Una query con `WHERE DATE(created_at) = '2026-01-15'` toca **un**
+archivo, no 365.
+
+**Snowflake** usa **micro-partitions** automáticas (16 MB cada una)
+ordenadas por insertion order. No defines particionamiento manual; lo
+manejas con clustering.
+
+**Redshift** usa `DISTSTYLE` y `SORTKEY` (similar pero diferente
+modelo).
+
+### Cuál columna usar para particionar
+
+Reglas:
+
+1. **Columna usada en `WHERE` casi siempre**. Para event data: fecha.
+   Para multi-tenant: tenant_id.
+2. **Cardinalidad moderada**. 365 días/año = OK. 1 millón de
+   timestamps únicos = explosión.
+3. **Truncar a granularidad correcta**: `DATE(timestamp)`, no
+   `timestamp`.
+
+Mala particionamiento es peor que sin particionamiento — overhead de
+metadata sin beneficio.
+
+### Clustering: orden físico dentro de partición
+
+Clustering ordena los datos dentro de cada archivo por columnas
+clave. Como un índice secundario adaptado a columnar.
+
+**BigQuery:**
+
+```sql
+CREATE TABLE analytics.events (...)
+PARTITION BY DATE(created_at)
+CLUSTER BY user_id, event_type;
+```
+
+Dentro de cada partición de fecha, los datos se almacenan ordenados
+por (user_id, event_type). Una query con `WHERE user_id = 'U123'`
+salta directamente a las páginas relevantes.
+
+**Snowflake:**
+
+```sql
+CREATE TABLE events (...) CLUSTER BY (user_id, event_type);
+-- O alterar:
+ALTER TABLE events CLUSTER BY (user_id, event_type);
+```
+
+Snowflake re-clusteriza automáticamente con un servicio de fondo
+(Auto-Clustering — pago aparte).
+
+### Order matters
+
+```sql
+CLUSTER BY user_id, event_type
+```
+
+Funciona bien para:
+
+- `WHERE user_id = X`
+- `WHERE user_id = X AND event_type = Y`
+
+NO bien para:
+
+- `WHERE event_type = Y` (solo, sin user_id) — eficiente parcialmente
+
+Pon primero la columna más selectiva o la usada con más frecuencia
+sola.
+
+### Combinaciones típicas
+
+<AnnotatedCode
+  language="sql"
+  filename="patterns.sql"
+  annotations={[
+    {
+      match: 'PARTITION BY DATE(created_at)',
+      title: 'Tabla de eventos / sales',
+      body: 'La gran mayoría de tablas analíticas tienen una columna de fecha y se filtran constantemente por rango de fechas. Particionar por DATE es default.',
+    },
+    {
+      match: 'CLUSTER BY user_id, event_type',
+      title: 'Patrones de query mixtos',
+      body: 'Si las queries varían entre filtrar por usuario o tipo de evento, clusterizar por ambos cubre los casos.',
+    },
+    {
+      match: '_PARTITIONTIME',
+      title: 'Pseudo-columna BQ',
+      body: 'BigQuery agrega _PARTITIONTIME (o _PARTITIONDATE) auto si no defines columna explícita. Útil para filtros de partition pruning.',
+    },
+  ]}
+>
+{`-- Tabla típica de eventos
+CREATE TABLE analytics.events (
+  event_id STRING,
+  user_id STRING,
+  event_type STRING,
+  payload JSON,
+  created_at TIMESTAMP
+)
+PARTITION BY DATE(created_at)
+CLUSTER BY user_id, event_type;
+
+-- Query óptima
+SELECT count(*) FROM analytics.events
+WHERE DATE(created_at) >= '2026-01-01'
+  AND user_id = 'U123';
+-- Bytes: solo las particiones de enero, dentro solo páginas con U123`}
+</AnnotatedCode>
+
+### Verificar que funcione
+
+**BigQuery:** la UI te muestra "bytes processed" antes de ejecutar.
+Sin partition pruning, ves TBs; con pruning, MBs.
+
+**Snowflake:** mira el query profile en Snowsight: "partitions
+scanned" / "partitions total". Idealmente menor al 10%.
+
+### Anti-patrones
+
+```sql
+-- ❌ Particionar por timestamp exacto (alta cardinalidad)
+PARTITION BY created_at        -- millones de particiones
+
+-- ❌ Filtrar por columna distinta a la de partición
+WHERE EXTRACT(YEAR FROM created_at) = 2026   -- no usa pruning
+-- ✓ usa función explícita compatible
+WHERE created_at >= '2026-01-01' AND created_at < '2027-01-01'
+
+-- ❌ Cluster por columnas no usadas en filtros
+CLUSTER BY event_id           -- siempre único, sirve para nada
+
+-- ❌ Demasiadas columnas en CLUSTER BY
+CLUSTER BY a, b, c, d, e, f    -- pierde efectividad después de 2-4
+```
+
+### Cuándo no particionar
+
+- **Tablas pequeñas** (menores a 1GB): overhead de metadata pesa más que el
+  ahorro.
+- **Sin columna obvia para particionar**: si las queries no comparten
+  un filtro común, particionar arbitrariamente puede empeorar.
+- **Snowflake tablas menores a 1TB**: las micro-partitions automáticas suelen
+  bastar; clusterizar tiene costo.
+
+### Errores comunes
+
+- **Olvidar particionar tablas TB-scale**: factura mensual ridícula.
+- **Particionar por timestamp exacto**: explosión.
+- **`CLUSTER BY event_id`**: sin selectividad.
+- **Filtrar con función que rompe pruning**: usa columna directa.
+- **No verificar bytes scanned**: optimizas a ciegas.
+
+### Para seguir aprendiendo
+
+- [BigQuery partitioning](https://cloud.google.com/bigquery/docs/partitioned-tables)
+- [BigQuery clustering](https://cloud.google.com/bigquery/docs/clustered-tables)
+- [Snowflake clustering](https://docs.snowflake.com/en/user-guide/tables-clustering-keys)
+
+---
+
+## Quiz
+
+<Quiz
+  id="wh-partitioning-quiz"
+  xpReward={70}
+  passingScore={70}
+  questions={[
+    {
+      type: 'multiple_choice',
+      id: 'q1',
+      prompt: 'Particionar una tabla por DATE(timestamp) ayuda a:',
+      options: [
+        'Acelerar inserts',
+        'Hacer partition pruning: queries con WHERE date solo escanean particiones relevantes',
+        'Compresión',
+        'Permisos',
+      ],
+      correctIndex: 1,
+      explanation: 'Reduce bytes escaneados → costo y tiempo.',
+    },
+    {
+      type: 'true_false',
+      id: 'q2',
+      prompt: 'En Snowflake defines particionamiento manual con PARTITION BY.',
+      correct: false,
+      explanation: 'Snowflake usa micro-partitions automáticas. Tú clusterizas.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q3',
+      prompt: 'Anti-patrón claro:',
+      options: [
+        'PARTITION BY DATE(created_at)',
+        'PARTITION BY user_id (cardinalidad muy alta)',
+        'CLUSTER BY user_id',
+        'No particionar tabla pequeña',
+      ],
+      correctIndex: 1,
+      explanation: 'Genera millones de particiones — overhead enorme.',
+    },
+    {
+      type: 'fill_code',
+      id: 'q4',
+      prompt: 'Para cluster por dos columnas con orden:',
+      template: 'CLUSTER BY ___, event_type',
+      answer: 'user_id',
+      caseSensitive: false,
+      explanation: 'Orden importa: la primera es la más selectiva o más frecuente.',
+    },
+    {
+      type: 'multiple_choice',
+      id: 'q5',
+      prompt: '¿Cómo verificas que el partitioning funciona?',
+      options: [
+        'No se puede',
+        'Mira "bytes processed" en BQ o "partitions scanned" en Snowflake — debería ser bajo',
+        'Solo en producción',
+        'Solo viendo tiempo',
+      ],
+      correctIndex: 1,
+      explanation: 'Métrica directa: <10% de particiones escaneadas → bien.',
+    },
+  ]}
+/>
+
+---
+
+## Ejercicio práctico
+
+<Exercise
+  id="wh-partitioning-exercise"
+  title="Detectar particionamiento óptimo"
+  description="Implementa `recommendPartition(rowCount, dateColCardinality)`. Si rowCount > 1M Y dateColCardinality entre 30 y 10000 → 'partition by date'. Si rowCount < 100k → 'no partition'. Otherwise → 'consider clustering'."
+  language="javascript"
+  starterCode={`function recommendPartition(rowCount, dateColCardinality) {
+  return '';
+}
+
+console.log(recommendPartition(5_000_000, 365));   // partition by date
+console.log(recommendPartition(50_000, 100));      // no partition
+console.log(recommendPartition(500_000, 1));       // consider clustering`}
+  solution={`function recommendPartition(rowCount, dateColCardinality) {
+  if (rowCount < 100_000) return 'no partition';
+  if (rowCount > 1_000_000 && dateColCardinality >= 30 && dateColCardinality <= 10_000) {
+    return 'partition by date';
+  }
+  return 'consider clustering';
+}
+console.log(recommendPartition(5_000_000, 365));
+console.log(recommendPartition(50_000, 100));
+console.log(recommendPartition(500_000, 1));`}
+  hints={[
+    'Aplica las reglas en orden.',
+    'Tabla pequeña: no partition.',
+  ]}
+  tests={[
+    { description: 'tabla grande con cardinalidad apta', assert: 'recommendPartition(5e6, 365) === "partition by date"' },
+    { description: 'tabla pequeña', assert: 'recommendPartition(50000, 100) === "no partition"' },
+    { description: 'cardinalidad muy baja', assert: 'recommendPartition(5e6, 1) === "consider clustering"' },
+  ]}
+/>
+
+---
+
+Próxima lección: **cost optimization**.
